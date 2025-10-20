@@ -2,10 +2,11 @@ from __future__ import annotations
 
 from dataclasses import dataclass
 from pathlib import Path
-from typing import Dict, Iterable, Optional
+from typing import Dict, Optional, Tuple
 
 import torch
 import torch.nn as nn
+import torch.nn.functional as F
 
 from app.processors.models_data import models_dir
 
@@ -16,76 +17,125 @@ class _BackendStatus:
     error: Optional[str] = None
 
 
-class _ResidualBlock(nn.Module):
-    """Standard ResNet block used by the Face Aging and De-aging GAN."""
+class _FiLMBlock(nn.Module):
+    """Applies feature-wise affine modulation driven by an age embedding."""
 
-    def __init__(self, channels: int) -> None:
+    def __init__(self, channels: int, condition_dim: int) -> None:
         super().__init__()
-        self.block = nn.Sequential(
-            nn.ReflectionPad2d(1),
-            nn.Conv2d(channels, channels, kernel_size=3, bias=False),
-            nn.InstanceNorm2d(channels, affine=True, track_running_stats=False),
-            nn.ReLU(inplace=True),
-            nn.ReflectionPad2d(1),
-            nn.Conv2d(channels, channels, kernel_size=3, bias=False),
-            nn.InstanceNorm2d(channels, affine=True, track_running_stats=False),
+        self.gamma = nn.Linear(condition_dim, channels)
+        self.beta = nn.Linear(condition_dim, channels)
+
+    def forward(self, x: torch.Tensor, condition: torch.Tensor) -> torch.Tensor:
+        gamma = self.gamma(condition).unsqueeze(-1).unsqueeze(-1)
+        beta = self.beta(condition).unsqueeze(-1).unsqueeze(-1)
+        return x * (1.0 + gamma) + beta
+
+
+class _ResidualConv(nn.Module):
+    def __init__(self, in_channels: int, out_channels: int, condition_dim: int) -> None:
+        super().__init__()
+        self.conv1 = nn.Conv2d(in_channels, out_channels, kernel_size=3, padding=1, bias=False)
+        self.norm1 = nn.InstanceNorm2d(out_channels, affine=True, track_running_stats=False)
+        self.mod1 = _FiLMBlock(out_channels, condition_dim)
+        self.conv2 = nn.Conv2d(out_channels, out_channels, kernel_size=3, padding=1, bias=False)
+        self.norm2 = nn.InstanceNorm2d(out_channels, affine=True, track_running_stats=False)
+        self.mod2 = _FiLMBlock(out_channels, condition_dim)
+        self.act = nn.LeakyReLU(0.2, inplace=True)
+        self.skip = (
+            nn.Conv2d(in_channels, out_channels, kernel_size=1, bias=False)
+            if in_channels != out_channels
+            else nn.Identity()
         )
 
-    def forward(self, x: torch.Tensor) -> torch.Tensor:
-        return x + self.block(x)
+    def forward(self, x: torch.Tensor, condition: torch.Tensor) -> torch.Tensor:
+        residual = self.skip(x)
+        out = self.conv1(x)
+        out = self.norm1(out)
+        out = self.mod1(out, condition)
+        out = self.act(out)
+        out = self.conv2(out)
+        out = self.norm2(out)
+        out = self.mod2(out, condition)
+        out = self.act(out + residual)
+        return out
 
 
-class FaceAgingGenerator(nn.Module):
-    """ResNet-based generator mirroring the Gayathry-CB implementation."""
-
-    def __init__(self, input_channels: int, output_channels: int = 3, residual_blocks: int = 9) -> None:
+class _EncoderBlock(nn.Module):
+    def __init__(self, in_channels: int, out_channels: int, condition_dim: int) -> None:
         super().__init__()
-        model: list[nn.Module] = [
-            nn.ReflectionPad2d(3),
-            nn.Conv2d(input_channels, 64, kernel_size=7, bias=False),
-            nn.InstanceNorm2d(64, affine=True, track_running_stats=False),
-            nn.ReLU(inplace=True),
-        ]
+        self.residual = _ResidualConv(in_channels, out_channels, condition_dim)
+        self.down = nn.Conv2d(out_channels, out_channels, kernel_size=4, stride=2, padding=1, bias=False)
 
-        in_features = 64
-        out_features = in_features * 2
-        for _ in range(2):
-            model += [
-                nn.Conv2d(in_features, out_features, kernel_size=4, stride=2, padding=1, bias=False),
-                nn.InstanceNorm2d(out_features, affine=True, track_running_stats=False),
-                nn.ReLU(inplace=True),
+    def forward(self, x: torch.Tensor, condition: torch.Tensor) -> Tuple[torch.Tensor, torch.Tensor]:
+        features = self.residual(x, condition)
+        down = self.down(features)
+        return features, down
+
+
+class _DecoderBlock(nn.Module):
+    def __init__(self, in_channels: int, skip_channels: int, out_channels: int, condition_dim: int) -> None:
+        super().__init__()
+        self.up = nn.ConvTranspose2d(in_channels, out_channels, kernel_size=4, stride=2, padding=1, bias=False)
+        self.residual = _ResidualConv(out_channels + skip_channels, out_channels, condition_dim)
+
+    def forward(self, x: torch.Tensor, skip: torch.Tensor, condition: torch.Tensor) -> torch.Tensor:
+        up = self.up(x)
+        if up.shape[-2:] != skip.shape[-2:]:
+            up = F.interpolate(up, size=skip.shape[-2:], mode="bilinear", align_corners=False)
+        merged = torch.cat([up, skip], dim=1)
+        return self.residual(merged, condition)
+
+
+class ConditionalUNet(nn.Module):
+    """Conditional UNet mirroring the face_reaging generator."""
+
+    def __init__(
+        self,
+        in_channels: int = 3,
+        condition_channels: int = 2,
+        base_channels: int = 64,
+    ) -> None:
+        super().__init__()
+        self.condition_dim = condition_channels
+
+        self.initial = _ResidualConv(in_channels, base_channels, condition_channels)
+        self.encoders = nn.ModuleList(
+            [
+                _EncoderBlock(base_channels, base_channels * 2, condition_channels),
+                _EncoderBlock(base_channels * 2, base_channels * 4, condition_channels),
+                _EncoderBlock(base_channels * 4, base_channels * 8, condition_channels),
             ]
-            in_features = out_features
-            out_features = in_features * 2
-
-        for _ in range(residual_blocks):
-            model.append(_ResidualBlock(in_features))
-
-        out_features = in_features // 2
-        for _ in range(2):
-            model += [
-                nn.ConvTranspose2d(in_features, out_features, kernel_size=4, stride=2, padding=1, bias=False),
-                nn.InstanceNorm2d(out_features, affine=True, track_running_stats=False),
-                nn.ReLU(inplace=True),
+        )
+        self.bottleneck = _ResidualConv(base_channels * 8, base_channels * 8, condition_channels)
+        self.decoders = nn.ModuleList(
+            [
+                _DecoderBlock(base_channels * 8, base_channels * 8, base_channels * 4, condition_channels),
+                _DecoderBlock(base_channels * 4, base_channels * 4, base_channels * 2, condition_channels),
+                _DecoderBlock(base_channels * 2, base_channels * 2, base_channels, condition_channels),
             ]
-            in_features = out_features
-            out_features = in_features // 2
+        )
+        self.final = nn.Sequential(
+            nn.Conv2d(base_channels, base_channels // 2, kernel_size=3, padding=1, bias=False),
+            nn.InstanceNorm2d(base_channels // 2, affine=True, track_running_stats=False),
+            nn.LeakyReLU(0.2, inplace=True),
+            nn.Conv2d(base_channels // 2, in_channels, kernel_size=1),
+        )
 
-        model += [
-            nn.ReflectionPad2d(3),
-            nn.Conv2d(64, output_channels, kernel_size=7),
-            nn.Tanh(),
-        ]
+    def forward(self, x: torch.Tensor, condition: torch.Tensor) -> torch.Tensor:
+        condition = condition.to(dtype=x.dtype)
+        initial = self.initial(x, condition)
+        skip_connections = [initial]
+        out = initial
+        for encoder in self.encoders:
+            skip, out = encoder(out, condition)
+            skip_connections.append(skip)
 
-        self.model = nn.Sequential(*model)
+        out = self.bottleneck(out, condition)
+        for decoder, skip in zip(self.decoders, reversed(skip_connections[:-1])):
+            out = decoder(out, skip, condition)
 
-    def forward(self, image: torch.Tensor, condition: Optional[torch.Tensor]) -> torch.Tensor:
-        if condition is not None:
-            if condition.dim() == 2:
-                condition = condition[:, :, None, None]
-            condition = condition.expand(-1, -1, image.shape[-2], image.shape[-1])
-            image = torch.cat([image, condition], dim=1)
-        return self.model(image)
+        out = self.final(out)
+        return torch.tanh(out)
 
 
 def _normalise_state_dict(state_dict: Dict[str, torch.Tensor]) -> Dict[str, torch.Tensor]:
@@ -100,150 +150,87 @@ def _normalise_state_dict(state_dict: Dict[str, torch.Tensor]) -> Dict[str, torc
     return state_dict
 
 
-def _find_first_weight_key(state_dict: Dict[str, torch.Tensor], suffixes: Iterable[str]) -> Optional[str]:
-    for suffix in suffixes:
-        for key in state_dict:
-            if key.endswith(suffix):
-                return key
-    return None
-
-
 class FaceReagingBackend:
-    """Wrapper that loads the Face Aging and De-aging GAN generator."""
+    """Wrapper that loads the official face re-aging UNet if available."""
 
     def __init__(self, device: str | torch.device) -> None:
         self.device = torch.device(device) if not isinstance(device, torch.device) else device
-        self.model_dir = Path(models_dir) / "face_reaging"
-        self.model_dir.mkdir(parents=True, exist_ok=True)
-        self.model_path: Optional[Path] = None
-        self.model: Optional[FaceAgingGenerator] = None
+        self.model_path = Path(models_dir) / "face_reaging" / "best_unet_model.pth"
+        self.model_path.parent.mkdir(parents=True, exist_ok=True)
+        self.model: Optional[nn.Module] = None
         self.status = _BackendStatus(is_ready=False, error=None)
-        self.label_channels = 0
-        self._resolve_checkpoint()
+        self.condition_channels = 2
         self._load()
 
     @property
     def is_ready(self) -> bool:
         return self.status.is_ready and self.model is not None
 
-    def _resolve_checkpoint(self) -> None:
-        candidates = [
-            "fad_gan_generator.pth",
-            "fad_gan.pt",
-            "face_aging_gan.pth",
-            "face_aging_generator.pth",
-            "G.pth",
-        ]
-        for candidate in candidates:
-            path = self.model_dir / candidate
-            if path.exists():
-                self.model_path = path
-                return
-
-        checkpoints = sorted(self.model_dir.glob("*.pt")) + sorted(self.model_dir.glob("*.pth"))
-        if checkpoints:
-            self.model_path = checkpoints[0]
-        else:
-            self.model_path = None
-
-    def _extract_state_dict(self, payload: object) -> Optional[Dict[str, torch.Tensor]]:
-        if isinstance(payload, dict):
-            for key in [
-                "state_dict",
-                "generator",
-                "G_state_dict",
-                "netG",
-                "model_state_dict",
-                "G",
-                "model",
-            ]:
-                nested = payload.get(key) if isinstance(payload, dict) else None
-                if isinstance(nested, dict):
-                    return _normalise_state_dict(nested)
-            return _normalise_state_dict(payload)
-        if isinstance(payload, nn.Module):
-            return _normalise_state_dict(payload.state_dict())
-        return None
-
     def _load(self) -> None:
-        if self.model_path is None or not self.model_path.exists():
-            self.status = _BackendStatus(is_ready=False, error="Missing Face Aging GAN checkpoint")
+        if not self.model_path.exists():
+            self.status = _BackendStatus(is_ready=False, error="Missing best_unet_model.pth checkpoint")
             return
 
         try:
-            try:
-                payload = torch.load(str(self.model_path), map_location="cpu", weights_only=True)
-            except TypeError:
-                payload = torch.load(str(self.model_path), map_location="cpu")
+            self.model = torch.jit.load(str(self.model_path), map_location=self.device)
+            self.model.eval()
+            self.status = _BackendStatus(is_ready=True, error=None)
+            return
+        except Exception:  # pragma: no cover - fallback path
+            pass
+
+        state: Optional[object] = None
+        try:
+            state = torch.load(str(self.model_path), map_location="cpu", weights_only=True)
+        except TypeError:
+            state = torch.load(str(self.model_path), map_location="cpu")
         except Exception as load_error:
             self.status = _BackendStatus(is_ready=False, error=f"Unable to read checkpoint: {load_error}")
             return
 
-        state_dict = self._extract_state_dict(payload)
-        if not state_dict:
-            self.status = _BackendStatus(
-                is_ready=False,
-                error=f"Checkpoint format not recognised ({type(payload).__name__})",
-            )
+        if isinstance(state, nn.Module):
+            self.model = state.to(self.device)
+            self.model.eval()
+            self.status = _BackendStatus(is_ready=True, error=None)
             return
 
-        weight_key = _find_first_weight_key(state_dict, ("0.weight", "1.weight", "model.0.weight"))
-        if weight_key is None:
-            self.status = _BackendStatus(is_ready=False, error="Unable to infer generator input shape")
+        if isinstance(state, dict):
+            candidates = [
+                "state_dict",
+                "generator",
+                "ema",
+                "model_state_dict",
+                "netG",
+                "G",
+                "model",
+            ]
+            state_dict = None
+            for candidate in candidates:
+                candidate_value = state.get(candidate) if isinstance(state, dict) else None
+                if isinstance(candidate_value, dict):
+                    state_dict = candidate_value
+                    break
+            if state_dict is None:
+                state_dict = state
+
+            state_dict = _normalise_state_dict(state_dict)
+            model = ConditionalUNet(in_channels=3, condition_channels=self.condition_channels)
+            missing, unexpected = model.load_state_dict(state_dict, strict=False)
+            if missing or unexpected:
+                self.status = _BackendStatus(
+                    is_ready=len(missing) < len(state_dict),
+                    error=f"Missing keys: {len(missing)}, unexpected: {len(unexpected)}",
+                )
+            else:
+                self.status = _BackendStatus(is_ready=True, error=None)
+            self.model = model.to(self.device)
+            self.model.eval()
             return
 
-        first_weight = state_dict[weight_key]
-        if first_weight.ndim != 4:
-            self.status = _BackendStatus(is_ready=False, error="Unexpected generator weight dimensions")
-            return
-
-        input_channels = first_weight.shape[1]
-        self.label_channels = max(0, input_channels - 3)
-
-        generator = FaceAgingGenerator(input_channels=input_channels)
-        missing, unexpected = generator.load_state_dict(state_dict, strict=False)
-        is_ready = len(missing) == 0 and len(unexpected) == 0
         self.status = _BackendStatus(
-            is_ready=is_ready,
-            error=None if is_ready else f"Missing keys: {len(missing)}, unexpected: {len(unexpected)}",
+            is_ready=False,
+            error=f"Checkpoint format not recognised ({type(state).__name__})",
         )
-
-        self.model = generator.to(self.device)
-        self.model.eval()
-
-    def _encode_condition(self, current_age: float, target_age: float, batch: int, device: torch.device, dtype: torch.dtype) -> Optional[torch.Tensor]:
-        if self.label_channels <= 0:
-            return None
-
-        current_norm = max(0.0, min(current_age, 100.0)) / 100.0
-        target_norm = max(0.0, min(target_age, 100.0)) / 100.0
-
-        if self.label_channels == 1:
-            condition = torch.full((batch, 1), target_norm, dtype=dtype, device=device)
-        elif self.label_channels == 2:
-            condition = torch.tensor([[current_norm, target_norm]], dtype=dtype, device=device)
-            if batch > 1:
-                condition = condition.expand(batch, -1)
-        elif self.label_channels % 2 == 0 and self.label_channels <= 20:
-            half = self.label_channels // 2
-            current_bins = torch.zeros((batch, half), dtype=dtype, device=device)
-            target_bins = torch.zeros((batch, half), dtype=dtype, device=device)
-
-            def _age_to_index(value: float) -> int:
-                scaled = max(0.0, min(value, 0.9999)) * half
-                return min(int(round(scaled)), half - 1)
-
-            current_idx = _age_to_index(current_norm)
-            target_idx = _age_to_index(target_norm)
-            current_bins[:, current_idx] = 1.0
-            target_bins[:, target_idx] = 1.0
-            condition = torch.cat([current_bins, target_bins], dim=1)
-        else:
-            condition = torch.zeros((batch, self.label_channels), dtype=dtype, device=device)
-            idx = min(int(round(target_norm * (self.label_channels - 1))), self.label_channels - 1)
-            condition[:, idx] = 1.0
-
-        return condition
 
     def __call__(
         self,
@@ -260,17 +247,36 @@ class FaceReagingBackend:
                 batched = batched[:1]
             batched = batched.to(device=self.device, dtype=torch.float32)
 
-            condition = self._encode_condition(current_age, target_age, batched.size(0), batched.device, batched.dtype)
-            input_tensor = batched * 2.0 - 1.0
-            output = self.model(input_tensor, condition)
+            condition = torch.tensor(
+                [current_age / 100.0, target_age / 100.0],
+                dtype=batched.dtype,
+                device=batched.device,
+            ).view(1, self.condition_channels)
+
+            if isinstance(self.model, ConditionalUNet):
+                model_input = batched * 2.0 - 1.0
+                output = self.model(model_input, condition)
+            else:
+                condition_map = condition.view(1, self.condition_channels, 1, 1).expand(
+                    batched.size(0), -1, batched.shape[-2], batched.shape[-1]
+                )
+                model_input = torch.cat([batched * 2.0 - 1.0, condition_map], dim=1)
+                output = self.model(model_input)
 
             if isinstance(output, (tuple, list)):
                 output = output[0]
             if output.dim() == 4:
                 output = output[0]
 
-            result = torch.clamp((output + 1.0) * 0.5, 0.0, 1.0)
-            return result
+            if isinstance(self.model, ConditionalUNet):
+                scaled = torch.clamp(output, -1.0, 1.0)
+            else:
+                if not output.dtype.is_floating_point:
+                    output = output.to(torch.float32)
+                scaled = torch.tanh(output)
+
+            result = (scaled + 1.0) * 0.5
+            return torch.clamp(result, 0.0, 1.0)
         except Exception as runtime_error:  # pragma: no cover - best effort fallback
             self.status = _BackendStatus(is_ready=False, error=str(runtime_error))
             return None
