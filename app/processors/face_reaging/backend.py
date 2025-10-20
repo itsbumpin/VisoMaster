@@ -2,7 +2,7 @@ from __future__ import annotations
 
 from dataclasses import dataclass
 from pathlib import Path
-from typing import Optional, Tuple
+from typing import Dict, Optional, Tuple
 
 import torch
 import torch.nn as nn
@@ -17,48 +17,78 @@ class _BackendStatus:
     error: Optional[str] = None
 
 
-class _ConvBlock(nn.Module):
-    def __init__(self, in_channels: int, out_channels: int) -> None:
+class _FiLMBlock(nn.Module):
+    """Applies feature-wise affine modulation driven by an age embedding."""
+
+    def __init__(self, channels: int, condition_dim: int) -> None:
         super().__init__()
-        self.block = nn.Sequential(
-            nn.Conv2d(in_channels, out_channels, kernel_size=3, padding=1, bias=False),
-            nn.InstanceNorm2d(out_channels, affine=True, track_running_stats=True),
-            nn.GELU(),
-            nn.Conv2d(out_channels, out_channels, kernel_size=3, padding=1, bias=False),
-            nn.InstanceNorm2d(out_channels, affine=True, track_running_stats=True),
-            nn.GELU(),
+        self.gamma = nn.Linear(condition_dim, channels)
+        self.beta = nn.Linear(condition_dim, channels)
+
+    def forward(self, x: torch.Tensor, condition: torch.Tensor) -> torch.Tensor:
+        gamma = self.gamma(condition).unsqueeze(-1).unsqueeze(-1)
+        beta = self.beta(condition).unsqueeze(-1).unsqueeze(-1)
+        return x * (1.0 + gamma) + beta
+
+
+class _ResidualConv(nn.Module):
+    def __init__(self, in_channels: int, out_channels: int, condition_dim: int) -> None:
+        super().__init__()
+        self.conv1 = nn.Conv2d(in_channels, out_channels, kernel_size=3, padding=1, bias=False)
+        self.norm1 = nn.InstanceNorm2d(out_channels, affine=True, track_running_stats=False)
+        self.mod1 = _FiLMBlock(out_channels, condition_dim)
+        self.conv2 = nn.Conv2d(out_channels, out_channels, kernel_size=3, padding=1, bias=False)
+        self.norm2 = nn.InstanceNorm2d(out_channels, affine=True, track_running_stats=False)
+        self.mod2 = _FiLMBlock(out_channels, condition_dim)
+        self.act = nn.LeakyReLU(0.2, inplace=True)
+        self.skip = (
+            nn.Conv2d(in_channels, out_channels, kernel_size=1, bias=False)
+            if in_channels != out_channels
+            else nn.Identity()
         )
 
-    def forward(self, x: torch.Tensor) -> torch.Tensor:
-        return self.block(x)
+    def forward(self, x: torch.Tensor, condition: torch.Tensor) -> torch.Tensor:
+        residual = self.skip(x)
+        out = self.conv1(x)
+        out = self.norm1(out)
+        out = self.mod1(out, condition)
+        out = self.act(out)
+        out = self.conv2(out)
+        out = self.norm2(out)
+        out = self.mod2(out, condition)
+        out = self.act(out + residual)
+        return out
 
 
-class _DownBlock(nn.Module):
-    def __init__(self, in_channels: int, out_channels: int) -> None:
+class _EncoderBlock(nn.Module):
+    def __init__(self, in_channels: int, out_channels: int, condition_dim: int) -> None:
         super().__init__()
-        self.conv = _ConvBlock(in_channels, out_channels)
+        self.residual = _ResidualConv(in_channels, out_channels, condition_dim)
+        self.down = nn.Conv2d(out_channels, out_channels, kernel_size=4, stride=2, padding=1, bias=False)
 
-    def forward(self, x: torch.Tensor) -> Tuple[torch.Tensor, torch.Tensor]:
-        residual = self.conv(x)
-        pooled = F.avg_pool2d(residual, kernel_size=2, stride=2, divisor_override=None)
-        return residual, pooled
+    def forward(self, x: torch.Tensor, condition: torch.Tensor) -> Tuple[torch.Tensor, torch.Tensor]:
+        features = self.residual(x, condition)
+        down = self.down(features)
+        return features, down
 
 
-class _UpBlock(nn.Module):
-    def __init__(self, in_channels: int, skip_channels: int, out_channels: int) -> None:
+class _DecoderBlock(nn.Module):
+    def __init__(self, in_channels: int, skip_channels: int, out_channels: int, condition_dim: int) -> None:
         super().__init__()
-        self.upsample = nn.ConvTranspose2d(in_channels, out_channels, kernel_size=2, stride=2)
-        self.conv = _ConvBlock(out_channels + skip_channels, out_channels)
+        self.up = nn.ConvTranspose2d(in_channels, out_channels, kernel_size=4, stride=2, padding=1, bias=False)
+        self.residual = _ResidualConv(out_channels + skip_channels, out_channels, condition_dim)
 
-    def forward(self, x: torch.Tensor, skip: torch.Tensor) -> torch.Tensor:
-        up = self.upsample(x)
+    def forward(self, x: torch.Tensor, skip: torch.Tensor, condition: torch.Tensor) -> torch.Tensor:
+        up = self.up(x)
         if up.shape[-2:] != skip.shape[-2:]:
             up = F.interpolate(up, size=skip.shape[-2:], mode="bilinear", align_corners=False)
-        concatenated = torch.cat([up, skip], dim=1)
-        return self.conv(concatenated)
+        merged = torch.cat([up, skip], dim=1)
+        return self.residual(merged, condition)
 
 
 class ConditionalUNet(nn.Module):
+    """Conditional UNet mirroring the face_reaging generator."""
+
     def __init__(
         self,
         in_channels: int = 3,
@@ -66,51 +96,67 @@ class ConditionalUNet(nn.Module):
         base_channels: int = 64,
     ) -> None:
         super().__init__()
-        total_in = in_channels + condition_channels
-        self.condition_channels = condition_channels
+        self.condition_dim = condition_channels
 
-        self.initial = _ConvBlock(total_in, base_channels)
-        self.down1 = _DownBlock(base_channels, base_channels * 2)
-        self.down2 = _DownBlock(base_channels * 2, base_channels * 4)
-        self.down3 = _DownBlock(base_channels * 4, base_channels * 8)
-        self.mid = _ConvBlock(base_channels * 8, base_channels * 8)
-        self.up3 = _UpBlock(base_channels * 8, base_channels * 4, base_channels * 4)
-        self.up2 = _UpBlock(base_channels * 4, base_channels * 2, base_channels * 2)
-        self.up1 = _UpBlock(base_channels * 2, base_channels, base_channels)
-        self.final = nn.Conv2d(base_channels, in_channels, kernel_size=1)
+        self.initial = _ResidualConv(in_channels, base_channels, condition_channels)
+        self.encoders = nn.ModuleList(
+            [
+                _EncoderBlock(base_channels, base_channels * 2, condition_channels),
+                _EncoderBlock(base_channels * 2, base_channels * 4, condition_channels),
+                _EncoderBlock(base_channels * 4, base_channels * 8, condition_channels),
+            ]
+        )
+        self.bottleneck = _ResidualConv(base_channels * 8, base_channels * 8, condition_channels)
+        self.decoders = nn.ModuleList(
+            [
+                _DecoderBlock(base_channels * 8, base_channels * 8, base_channels * 4, condition_channels),
+                _DecoderBlock(base_channels * 4, base_channels * 4, base_channels * 2, condition_channels),
+                _DecoderBlock(base_channels * 2, base_channels * 2, base_channels, condition_channels),
+            ]
+        )
+        self.final = nn.Sequential(
+            nn.Conv2d(base_channels, base_channels // 2, kernel_size=3, padding=1, bias=False),
+            nn.InstanceNorm2d(base_channels // 2, affine=True, track_running_stats=False),
+            nn.LeakyReLU(0.2, inplace=True),
+            nn.Conv2d(base_channels // 2, in_channels, kernel_size=1),
+        )
 
     def forward(self, x: torch.Tensor, condition: torch.Tensor) -> torch.Tensor:
-        if condition.dim() == 2:
-            condition = condition.view(condition.size(0), condition.size(1), 1, 1)
-        if condition.shape[0] != x.shape[0]:
-            condition = condition.expand(x.shape[0], -1, -1, -1)
-        condition_map = condition.expand(-1, -1, x.shape[-2], x.shape[-1])
-        x = torch.cat([x, condition_map], dim=1)
+        condition = condition.to(dtype=x.dtype)
+        initial = self.initial(x, condition)
+        skip_connections = [initial]
+        out = initial
+        for encoder in self.encoders:
+            skip, out = encoder(out, condition)
+            skip_connections.append(skip)
 
-        enc0 = self.initial(x)
-        skip1, pooled1 = self.down1(enc0)
-        skip2, pooled2 = self.down2(pooled1)
-        skip3, pooled3 = self.down3(pooled2)
-        bottleneck = self.mid(pooled3)
-        up2 = self.up3(bottleneck, skip3)
-        up1 = self.up2(up2, skip2)
-        up0 = self.up1(up1, skip1)
-        output = self.final(up0)
-        return torch.tanh(output)
+        out = self.bottleneck(out, condition)
+        for decoder, skip in zip(self.decoders, reversed(skip_connections[:-1])):
+            out = decoder(out, skip, condition)
+
+        out = self.final(out)
+        return torch.tanh(out)
+
+
+def _normalise_state_dict(state_dict: Dict[str, torch.Tensor]) -> Dict[str, torch.Tensor]:
+    if not state_dict:
+        return state_dict
+
+    sample_key = next(iter(state_dict))
+    if sample_key.startswith("module."):
+        return {key[len("module."):]: value for key, value in state_dict.items()}
+    if sample_key.startswith("model."):
+        return {key[len("model."):]: value for key, value in state_dict.items()}
+    return state_dict
 
 
 class FaceReagingBackend:
-    """Wrapper that loads the official face re-aging UNet if available.
-
-    When the repository's ``best_unet_model.pth`` checkpoint is present in
-    ``model_assets/face_reaging`` the backend will execute that model. If the
-    checkpoint is missing or cannot be parsed, the backend simply reports that
-    it is unavailable and callers can gracefully fall back to an analytic
-    approximation."""
+    """Wrapper that loads the official face re-aging UNet if available."""
 
     def __init__(self, device: str | torch.device) -> None:
         self.device = torch.device(device) if not isinstance(device, torch.device) else device
         self.model_path = Path(models_dir) / "face_reaging" / "best_unet_model.pth"
+        self.model_path.parent.mkdir(parents=True, exist_ok=True)
         self.model: Optional[nn.Module] = None
         self.status = _BackendStatus(is_ready=False, error=None)
         self.condition_channels = 2
@@ -130,10 +176,10 @@ class FaceReagingBackend:
             self.model.eval()
             self.status = _BackendStatus(is_ready=True, error=None)
             return
-        except Exception as jit_error:  # pragma: no cover - fallback path
-            last_error = f"torch.jit load failed: {jit_error}"
+        except Exception:  # pragma: no cover - fallback path
+            pass
 
-        state = None
+        state: Optional[object] = None
         try:
             state = torch.load(str(self.model_path), map_location="cpu", weights_only=True)
         except TypeError:
@@ -149,13 +195,31 @@ class FaceReagingBackend:
             return
 
         if isinstance(state, dict):
-            state_dict = state.get("state_dict", state)
+            candidates = [
+                "state_dict",
+                "generator",
+                "ema",
+                "model_state_dict",
+                "netG",
+                "G",
+                "model",
+            ]
+            state_dict = None
+            for candidate in candidates:
+                candidate_value = state.get(candidate) if isinstance(state, dict) else None
+                if isinstance(candidate_value, dict):
+                    state_dict = candidate_value
+                    break
+            if state_dict is None:
+                state_dict = state
+
+            state_dict = _normalise_state_dict(state_dict)
             model = ConditionalUNet(in_channels=3, condition_channels=self.condition_channels)
             missing, unexpected = model.load_state_dict(state_dict, strict=False)
             if missing or unexpected:
                 self.status = _BackendStatus(
-                    is_ready=True,
-                    error=f"Loaded with missing={len(missing)}, unexpected={len(unexpected)} keys",
+                    is_ready=len(missing) < len(state_dict),
+                    error=f"Missing keys: {len(missing)}, unexpected: {len(unexpected)}",
                 )
             else:
                 self.status = _BackendStatus(is_ready=True, error=None)
@@ -163,7 +227,10 @@ class FaceReagingBackend:
             self.model.eval()
             return
 
-        self.status = _BackendStatus(is_ready=False, error="Checkpoint format not recognised")
+        self.status = _BackendStatus(
+            is_ready=False,
+            error=f"Checkpoint format not recognised ({type(state).__name__})",
+        )
 
     def __call__(
         self,
@@ -187,21 +254,28 @@ class FaceReagingBackend:
             ).view(1, self.condition_channels)
 
             if isinstance(self.model, ConditionalUNet):
-                model_input = batched * 2 - 1
+                model_input = batched * 2.0 - 1.0
                 output = self.model(model_input, condition)
             else:
-                model_input = torch.cat(
-                    [batched * 2 - 1, condition.view(1, self.condition_channels, 1, 1).expand(1, -1, batched.shape[-2], batched.shape[-1])],
-                    dim=1,
+                condition_map = condition.view(1, self.condition_channels, 1, 1).expand(
+                    batched.size(0), -1, batched.shape[-2], batched.shape[-1]
                 )
+                model_input = torch.cat([batched * 2.0 - 1.0, condition_map], dim=1)
                 output = self.model(model_input)
 
             if isinstance(output, (tuple, list)):
                 output = output[0]
             if output.dim() == 4:
                 output = output[0]
-            result = torch.tanh(output) if output.dtype.is_floating_point else output.to(torch.float32)
-            result = (result + 1.0) * 0.5
+
+            if isinstance(self.model, ConditionalUNet):
+                scaled = torch.clamp(output, -1.0, 1.0)
+            else:
+                if not output.dtype.is_floating_point:
+                    output = output.to(torch.float32)
+                scaled = torch.tanh(output)
+
+            result = (scaled + 1.0) * 0.5
             return torch.clamp(result, 0.0, 1.0)
         except Exception as runtime_error:  # pragma: no cover - best effort fallback
             self.status = _BackendStatus(is_ready=False, error=str(runtime_error))

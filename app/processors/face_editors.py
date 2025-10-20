@@ -33,6 +33,7 @@ class FaceEditors:
         self._face_reaging_soft_mask_kernel = 31
         self._face_reaging_soft_mask_sigma = 6.0
         self._face_reaging_backend = FaceReagingBackend(self.models_processor.device)
+        self._face_reaging_warned = False
 
     def load_lip_array(self):
         with open(f'{models_dir}/liveportrait_onnx/lip_array.pkl', 'rb') as f:
@@ -746,10 +747,19 @@ class FaceEditors:
 
         normalized = torch.clamp(img_float / 255.0, 0.0, 1.0)
 
-        backend_face = self._run_face_reaging_backend(normalized, current_age, target_age) if self._face_reaging_backend.is_ready else None
+        backend_face = (
+            self._run_face_reaging_backend(normalized, current_age, target_age)
+            if self._face_reaging_backend.is_ready
+            else None
+        )
         if backend_face is not None:
             aged_face = torch.lerp(normalized, backend_face, max(0.0, min(strength, 1.0)))
         else:
+            if not self._face_reaging_warned:
+                status = self._face_reaging_backend.status
+                reason = status.error if status and status.error else "backend unavailable"
+                print(f"[FaceReaging] Falling back to analytic filter: {reason}")
+                self._face_reaging_warned = True
             aged_face = self._analytic_face_reaging(normalized, age_shift, max(0.0, min(strength, 1.0)))
 
         blend_mask = torch.clamp(soft_mask * blend, 0, 1)
