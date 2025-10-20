@@ -37,47 +37,16 @@ FACE_EDITOR_LAYOUT_DATA: LayoutDictTypes = {
             'default': False,
             'help': 'Enable the face re-aging filter to adjust the perceived age of the face.'
         },
-        'FaceReagingCurrentAgeSlider': {
-            'level': 2,
-            'label': 'Current Age',
-            'min_value': '10',
-            'max_value': '80',
-            'default': '30',
-            'step': 1,
-            'parentToggle': 'FaceReagingEnableToggle',
-            'requiredToggleValue': True,
-            'help': 'Approximate age of the person in the source footage.'
-        },
-        'FaceReagingModelSelection': {
-            'level': 2,
-            'label': 'Re-Aging Model',
-            'options': ['Face Aging GAN', 'SAM De-Aging'],
-            'default': 'Face Aging GAN',
-            'parentToggle': 'FaceReagingEnableToggle',
-            'requiredToggleValue': True,
-            'help': 'Choose which backend to use. SAM prioritises de-aging while the GAN handles age increases.'
-        },
-        'FaceReagingTargetAgeSlider': {
-            'level': 2,
-            'label': 'Target Age',
-            'min_value': '10',
-            'max_value': '80',
-            'default': '45',
-            'step': 1,
-            'parentToggle': 'FaceReagingEnableToggle',
-            'requiredToggleValue': True,
-            'help': 'Desired age for the re-aged face. The model will age up or down from the current age.'
-        },
         'FaceReagingAgeShiftSlider': {
             'level': 2,
-            'label': 'Manual Age Offset',
-            'min_value': '-50',
-            'max_value': '50',
+            'label': 'Age Shift',
+            'min_value': '-40',
+            'max_value': '40',
             'default': '0',
             'step': 1,
             'parentToggle': 'FaceReagingEnableToggle',
             'requiredToggleValue': True,
-            'help': 'Optional manual override. Positive values age up and negative values rejuvenate regardless of the age sliders.'
+            'help': 'Negative values rejuvenate, positive values add age-related details.'
         },
         'FaceReagingStrengthDecimalSlider': {
             'level': 2,
