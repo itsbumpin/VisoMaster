@@ -11,6 +11,7 @@ from torchvision.transforms import v2
 
 from app.processors.models_data import models_dir
 from app.processors.utils import faceutil
+from app.processors.face_reaging import FaceReagingBackend
 if TYPE_CHECKING:
     from app.processors.models_processor import ModelsProcessor
     
