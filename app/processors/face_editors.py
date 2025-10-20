@@ -11,6 +11,7 @@ from torchvision.transforms import v2
 
 from app.processors.models_data import models_dir
 from app.processors.utils import faceutil
+from app.processors.face_reaging import FaceReagingBackend
 if TYPE_CHECKING:
     from app.processors.models_processor import ModelsProcessor
     
@@ -25,9 +26,145 @@ class FaceEditors:
             self.lp_lip_array = np.array(self.load_lip_array())
         except FileNotFoundError:
             self.lp_lip_array = None
+
+        self._face_parser_mean = (0.485, 0.456, 0.406)
+        self._face_parser_std = (0.229, 0.224, 0.225)
+        self._face_reaging_labels = torch.tensor([1, 7, 8, 10, 12, 13], device=self.models_processor.device)
+        self._face_reaging_soft_mask_kernel = 31
+        self._face_reaging_soft_mask_sigma = 6.0
+        self._face_reaging_backend = FaceReagingBackend(self.models_processor.device)
+
     def load_lip_array(self):
         with open(f'{models_dir}/liveportrait_onnx/lip_array.pkl', 'rb') as f:
             return pickle.load(f)
+
+    def _get_face_parsing(self, img: torch.Tensor) -> torch.Tensor:
+        temp = torch.div(img, 255.0)
+        temp = v2.functional.normalize(temp, self._face_parser_mean, self._face_parser_std)
+        temp = torch.reshape(temp, (1, 3, 512, 512))
+        outpred = torch.empty((1, 19, 512, 512), dtype=torch.float32, device=self.models_processor.device).contiguous()
+
+        self.models_processor.run_faceparser(temp, outpred)
+
+        outpred = torch.squeeze(outpred, 0)
+        parsing = torch.argmax(outpred, dim=0)
+        return parsing
+
+    def _gaussian_blur(self, tensor: torch.Tensor, kernel_size: int, sigma: float) -> torch.Tensor:
+        if kernel_size <= 1:
+            return tensor
+
+        add_channel = False
+        add_batch = False
+
+        orig_dtype = tensor.dtype
+        tensor = tensor.to(dtype=torch.float32)
+
+        if tensor.dim() == 2:
+            tensor = tensor.unsqueeze(0)
+            add_channel = True
+        if tensor.dim() == 3:
+            tensor = tensor.unsqueeze(0)
+            add_batch = True
+
+        blurred = v2.functional.gaussian_blur(
+            tensor,
+            [kernel_size, kernel_size],
+            [sigma, sigma]
+        )
+
+        if add_batch:
+            blurred = blurred.squeeze(0)
+        if add_channel:
+            blurred = blurred.squeeze(0)
+
+        return blurred.to(dtype=orig_dtype)
+
+    def _compute_face_reaging_soft_mask(self, mask: torch.Tensor) -> torch.Tensor:
+        mask = mask.unsqueeze(0).to(dtype=torch.float32)
+        blurred = self._gaussian_blur(mask, self._face_reaging_soft_mask_kernel, self._face_reaging_soft_mask_sigma)
+        blurred = torch.clamp(blurred, 0, 1)
+        return blurred
+
+    def _run_face_reaging_backend(
+        self,
+        normalized_face: torch.Tensor,
+        current_age: float,
+        target_age: float,
+    ) -> torch.Tensor | None:
+        backend_result = self._face_reaging_backend(normalized_face, current_age, target_age)
+        if backend_result is None:
+            return None
+        if backend_result.shape != normalized_face.shape:
+            backend_result = torch.nn.functional.interpolate(
+                backend_result.unsqueeze(0), size=normalized_face.shape[-2:], mode='bilinear', align_corners=False
+            ).squeeze(0)
+        return torch.clamp(backend_result, 0.0, 1.0)
+
+    def _analytic_face_reaging(
+        self,
+        normalized_face: torch.Tensor,
+        age_shift: float,
+        strength: float,
+    ) -> torch.Tensor:
+        if age_shift == 0 or strength <= 0:
+            return normalized_face
+
+        abs_shift = min(abs(age_shift) / 45.0, 1.0)
+        sigma = max(1.0, 1.0 + abs(age_shift) / 18.0)
+
+        def _odd_kernel(value: int) -> int:
+            return value if value % 2 == 1 else value + 1
+
+        kernel_base = _odd_kernel(int(5 + abs_shift * 6))
+        kernel_mid = _odd_kernel(kernel_base + 4)
+        kernel_wide = _odd_kernel(kernel_base + 10)
+
+        base_blur = self._gaussian_blur(normalized_face, kernel_base, sigma)
+        mid_blur = self._gaussian_blur(normalized_face, kernel_mid, sigma * 1.4)
+        wide_blur = self._gaussian_blur(normalized_face, kernel_wide, sigma * 2.2)
+
+        luma = (0.299 * normalized_face[0] + 0.587 * normalized_face[1] + 0.114 * normalized_face[2]).unsqueeze(0)
+        luma_mid = self._gaussian_blur(luma, _odd_kernel(kernel_base + 6), sigma * 1.8)
+        luma_wide = self._gaussian_blur(luma, _odd_kernel(kernel_base + 12), sigma * 2.6)
+
+        if age_shift > 0:
+            detail_gain = 0.85 + 1.3 * strength * abs_shift
+            micro_gain = 0.55 + 1.1 * strength * abs_shift
+            coarse_gain = 0.35 + 0.9 * strength * abs_shift
+
+            detail_map = (normalized_face - base_blur) * detail_gain
+            detail_map += (normalized_face - mid_blur) * micro_gain
+            detail_map += (normalized_face - wide_blur) * coarse_gain
+            detail_map = torch.clamp(detail_map, -0.9, 0.9)
+
+            shading_gain = 0.4 + 1.1 * strength * abs_shift
+            shading_map = torch.clamp((luma_mid - luma_wide) * shading_gain, -0.7, 0.7)
+
+            aged = torch.clamp(normalized_face + detail_map + shading_map, 0, 1)
+            contrast = 1.0 + 0.4 * strength * abs_shift
+            aged = torch.clamp((aged - 0.5) * contrast + 0.5, 0, 1)
+
+            tone_shift = torch.tensor([0.92, 0.85, 0.80], dtype=normalized_face.dtype, device=normalized_face.device).view(3, 1, 1)
+            aged = torch.lerp(aged, tone_shift, 0.18 * strength * abs_shift)
+            return aged
+
+        smooth_mix = 0.35 + 0.35 * strength * abs_shift
+        soft = torch.lerp(normalized_face, mid_blur, smooth_mix)
+        extra_mix = 0.25 + 0.35 * strength * abs_shift
+        soft = torch.lerp(soft, wide_blur, extra_mix)
+
+        highlight_gain = 0.25 + 0.45 * strength * abs_shift
+        highlight_map = torch.clamp((luma_mid - luma_wide) * highlight_gain, -0.25, 0.25)
+        soft = torch.clamp(soft + highlight_map, 0, 1)
+
+        glow = torch.tensor([1.05, 1.03, 1.0], dtype=normalized_face.dtype, device=normalized_face.device).view(3, 1, 1)
+        glow_mix = 0.15 + 0.25 * strength * abs_shift
+        glow_face = torch.clamp(soft * (1 - glow_mix) + soft * glow * glow_mix, 0, 1)
+
+        sharpen = normalized_face + (normalized_face - mid_blur) * (0.15 + 0.35 * strength * abs_shift)
+        rejuvenated = torch.lerp(sharpen, glow_face, 0.55 + 0.35 * strength * abs_shift)
+        return torch.clamp(rejuvenated, 0, 1)
         
     def lp_motion_extractor(self, img, face_editor_type='Human-Face', **kwargs) -> dict:
         kp_info = {}
@@ -492,16 +629,8 @@ class FaceEditors:
         # atts = [1 'skin', 2 'l_brow', 3 'r_brow', 4 'l_eye', 5 'r_eye', 6 'eye_g', 7 'l_ear', 8 'r_ear', 9 'ear_r', 10 'nose', 11 'mouth', 12 'u_lip', 13 'l_lip', 14 'neck', 15 'neck_l', 16 'cloth', 17 'hair', 18 'hat']
 
         # Normalize the image and perform parsing
-        temp = torch.div(img, 255)
-        temp = v2.functional.normalize(temp, (0.485, 0.456, 0.406), (0.229, 0.224, 0.225))
-        temp = torch.reshape(temp, (1, 3, 512, 512))
-        outpred = torch.empty((1, 19, 512, 512), dtype=torch.float32, device=self.models_processor.device).contiguous()
-
-        self.models_processor.run_faceparser(temp, outpred)
-
-        # Perform parsing prediction
-        outpred = torch.squeeze(outpred)
-        outpred = torch.argmax(outpred, 0)
+        img_float = img.to(dtype=torch.float32)
+        parsing = self._get_face_parsing(img_float)
 
         # Clone the image for modifications
         out = img.clone()
@@ -509,19 +638,19 @@ class FaceEditors:
         # Apply makeup for each face part
         if parameters['FaceMakeupEnableToggle']:
             color = [parameters['FaceMakeupRedSlider'], parameters['FaceMakeupGreenSlider'], parameters['FaceMakeupBlueSlider']]
-            out = self.face_parser_makeup_direct_rgb(img=out, parsing=outpred, part=(1, 7, 8, 10), color=color, blend_factor=parameters['FaceMakeupBlendAmountDecimalSlider'])
+            out = self.face_parser_makeup_direct_rgb(img=out, parsing=parsing, part=(1, 7, 8, 10), color=color, blend_factor=parameters['FaceMakeupBlendAmountDecimalSlider'])
 
         if parameters['HairMakeupEnableToggle']:
             color = [parameters['HairMakeupRedSlider'], parameters['HairMakeupGreenSlider'], parameters['HairMakeupBlueSlider']]
-            out = self.face_parser_makeup_direct_rgb(img=out, parsing=outpred, part=17, color=color, blend_factor=parameters['HairMakeupBlendAmountDecimalSlider'])
+            out = self.face_parser_makeup_direct_rgb(img=out, parsing=parsing, part=17, color=color, blend_factor=parameters['HairMakeupBlendAmountDecimalSlider'])
 
         if parameters['EyeBrowsMakeupEnableToggle']:
             color = [parameters['EyeBrowsMakeupRedSlider'], parameters['EyeBrowsMakeupGreenSlider'], parameters['EyeBrowsMakeupBlueSlider']]
-            out = self.face_parser_makeup_direct_rgb(img=out, parsing=outpred, part=(2, 3), color=color, blend_factor=parameters['EyeBrowsMakeupBlendAmountDecimalSlider'])
+            out = self.face_parser_makeup_direct_rgb(img=out, parsing=parsing, part=(2, 3), color=color, blend_factor=parameters['EyeBrowsMakeupBlendAmountDecimalSlider'])
 
         if parameters['LipsMakeupEnableToggle']:
             color = [parameters['LipsMakeupRedSlider'], parameters['LipsMakeupGreenSlider'], parameters['LipsMakeupBlueSlider']]
-            out = self.face_parser_makeup_direct_rgb(img=out, parsing=outpred, part=(12, 13), color=color, blend_factor=parameters['LipsMakeupBlendAmountDecimalSlider'])
+            out = self.face_parser_makeup_direct_rgb(img=out, parsing=parsing, part=(12, 13), color=color, blend_factor=parameters['LipsMakeupBlendAmountDecimalSlider'])
 
         # Define the different face attributes to apply makeup on
         face_attributes = {
@@ -551,7 +680,7 @@ class FaceEditors:
                 attribute_idxs = torch.tensor([attribute], device=self.models_processor.device)
 
                 # Create the mask: white for the part, black for the rest
-                attribute_parse = torch.isin(outpred, attribute_idxs).float()
+                attribute_parse = torch.isin(parsing, attribute_idxs).float()
                 attribute_parse = torch.clamp(attribute_parse, 0, 1)  # Manteniamo i valori tra 0 e 1
                 attribute_parse = torch.reshape(attribute_parse, (1, 1, 512, 512))
 
@@ -591,3 +720,41 @@ class FaceEditors:
         out = img * (1 - combined_mask.unsqueeze(0)) + out * combined_mask.unsqueeze(0)
 
         return out, combined_mask.unsqueeze(0)
+
+    def apply_face_reaging(self, img: torch.Tensor, parameters: dict) -> torch.Tensor:
+        strength = float(parameters.get('FaceReagingStrengthDecimalSlider', 0.6))
+        blend = float(parameters.get('FaceReagingBlendAmountDecimalSlider', 0.8))
+
+        if strength <= 0 or blend <= 0:
+            return img
+
+        target_age = float(parameters.get('FaceReagingTargetAgeSlider', 45))
+        current_age = float(parameters.get('FaceReagingCurrentAgeSlider', max(target_age - 10, 0)))
+        manual_shift = float(parameters.get('FaceReagingAgeShiftSlider', 0)) if 'FaceReagingAgeShiftSlider' in parameters else 0.0
+        age_shift = manual_shift if manual_shift != 0 else target_age - current_age
+
+        img_float = img.to(dtype=torch.float32)
+        parsing = self._get_face_parsing(img_float)
+
+        face_mask = torch.isin(parsing, self._face_reaging_labels)
+        if not torch.any(face_mask):
+            return img
+
+        soft_mask = self._compute_face_reaging_soft_mask(face_mask.float())
+        soft_mask = soft_mask.to(device=img_float.device)
+        soft_mask = soft_mask.expand_as(img_float)
+
+        normalized = torch.clamp(img_float / 255.0, 0.0, 1.0)
+
+        backend_face = self._run_face_reaging_backend(normalized, current_age, target_age) if self._face_reaging_backend.is_ready else None
+        if backend_face is not None:
+            aged_face = torch.lerp(normalized, backend_face, max(0.0, min(strength, 1.0)))
+        else:
+            aged_face = self._analytic_face_reaging(normalized, age_shift, max(0.0, min(strength, 1.0)))
+
+        blend_mask = torch.clamp(soft_mask * blend, 0, 1)
+        blended = normalized * (1 - blend_mask) + aged_face * blend_mask
+        result = normalized * (1 - soft_mask) + blended * soft_mask
+        result = torch.clamp(result, 0, 1)
+
+        return torch.clamp(result * 255.0, 0, 255).type(img.dtype).contiguous()
