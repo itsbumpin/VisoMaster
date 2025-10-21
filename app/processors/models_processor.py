@@ -395,9 +395,12 @@ class ModelsProcessor(QtCore.QObject):
     
     def apply_face_parser(self, img, parameters):
         return self.face_masks.apply_face_parser(img, parameters)
-    
+
     def apply_face_makeup(self, img, parameters):
         return self.face_editors.apply_face_makeup(img, parameters)
+
+    def apply_face_reaging(self, img, parameters):
+        return self.face_editors.apply_face_reaging(img, parameters)
     
     def restore_mouth(self, img_orig, img_swap, kpss_orig, blend_alpha=0.5, feather_radius=10, size_factor=0.5, radius_factor_x=1.0, radius_factor_y=1.0, x_offset=0, y_offset=0):
         return self.face_masks.restore_mouth(img_orig, img_swap, kpss_orig, blend_alpha, feather_radius, size_factor, radius_factor_x, radius_factor_y, x_offset, y_offset)
