@@ -1300,13 +1300,7 @@ class FrameWorker(threading.Thread):
                 img = torch.mul(img, 255.0)
                 img = torch.clamp(img, 0, 255).type(torch.uint8)
 
-        reaging_enabled = parameters.get('FaceReagingEnableToggle')
-        if isinstance(reaging_enabled, str):
-            reaging_enabled = reaging_enabled.strip().lower() in {'1', 'true', 'yes', 'on'}
-        else:
-            reaging_enabled = bool(reaging_enabled)
-
-        if reaging_enabled:
+        if parameters['FaceReagingEnableToggle']:
             if lmk_crop is None:
                 _, lmk_crop, _ = self.models_processor.run_detect_landmark(img, bbox=[], det_kpss=kps, detect_mode='203', score=0.5, from_points=True)
 
