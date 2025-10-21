@@ -31,6 +31,47 @@ FACE_EDITOR_LAYOUT_DATA: LayoutDictTypes = {
             'step': 1,
             'help': 'Blur amount.'
         },
+        'FaceReagingEnableToggle': {
+            'level': 1,
+            'label': 'Face Re-Aging',
+            'default': False,
+            'help': 'Enable the face re-aging filter to adjust the perceived age of the face.'
+        },
+        'FaceReagingAgeShiftSlider': {
+            'level': 2,
+            'label': 'Age Shift',
+            'min_value': '-40',
+            'max_value': '40',
+            'default': '0',
+            'step': 1,
+            'parentToggle': 'FaceReagingEnableToggle',
+            'requiredToggleValue': True,
+            'help': 'Negative values rejuvenate, positive values add age-related details.'
+        },
+        'FaceReagingStrengthDecimalSlider': {
+            'level': 2,
+            'label': 'Effect Strength',
+            'min_value': '0.00',
+            'max_value': '1.00',
+            'default': '0.60',
+            'step': 0.05,
+            'decimals': 2,
+            'parentToggle': 'FaceReagingEnableToggle',
+            'requiredToggleValue': True,
+            'help': 'Controls how strongly the model alters the perceived age.'
+        },
+        'FaceReagingBlendAmountDecimalSlider': {
+            'level': 2,
+            'label': 'Blend Amount',
+            'min_value': '0.00',
+            'max_value': '1.00',
+            'default': '0.80',
+            'step': 0.05,
+            'decimals': 2,
+            'parentToggle': 'FaceReagingEnableToggle',
+            'requiredToggleValue': True,
+            'help': 'Blends between the original face and the re-aged result.'
+        },
         'FaceEditorEnableToggle': {
             'level': 1,
             'label': 'Enable Face Pose/Expression Editor',
@@ -455,12 +496,12 @@ FACE_EDITOR_LAYOUT_DATA: LayoutDictTypes = {
     'Face Re-Aging': {
         'FaceReagingEnableToggle': {
             'level': 1,
-            'label': 'Enable Face Re-Aging',
+            'label': 'Face Re-Aging',
             'default': False,
             'help': 'Enable the face re-aging filter to adjust the perceived age of the face.'
         },
         'FaceReagingModelSelection': {
-            'level': 2,
+            'level': 1,
             'label': 'Re-Aging Model',
             'options': ['Face Aging GAN', 'SAM De-Aging'],
             'default': 'Face Aging GAN',
@@ -469,7 +510,7 @@ FACE_EDITOR_LAYOUT_DATA: LayoutDictTypes = {
             'help': 'Choose which backend to use. SAM prioritises de-aging while the GAN handles age increases.'
         },
         'FaceReagingCurrentAgeSlider': {
-            'level': 3,
+            'level': 2,
             'label': 'Current Age',
             'min_value': '10',
             'max_value': '80',
@@ -480,7 +521,7 @@ FACE_EDITOR_LAYOUT_DATA: LayoutDictTypes = {
             'help': 'Approximate age of the person in the source footage.'
         },
         'FaceReagingTargetAgeSlider': {
-            'level': 3,
+            'level': 2,
             'label': 'Target Age',
             'min_value': '10',
             'max_value': '80',
@@ -491,7 +532,7 @@ FACE_EDITOR_LAYOUT_DATA: LayoutDictTypes = {
             'help': 'Desired age for the re-aged face. The model will age up or down from the current age.'
         },
         'FaceReagingAgeShiftSlider': {
-            'level': 3,
+            'level': 2,
             'label': 'Manual Age Offset',
             'min_value': '-50',
             'max_value': '50',
@@ -502,7 +543,7 @@ FACE_EDITOR_LAYOUT_DATA: LayoutDictTypes = {
             'help': 'Optional manual override. Positive values age up and negative values rejuvenate regardless of the age sliders.'
         },
         'FaceReagingStrengthDecimalSlider': {
-            'level': 3,
+            'level': 2,
             'label': 'Effect Strength',
             'min_value': '0.00',
             'max_value': '1.00',
@@ -514,7 +555,7 @@ FACE_EDITOR_LAYOUT_DATA: LayoutDictTypes = {
             'help': 'Controls how strongly the model alters the perceived age.'
         },
         'FaceReagingBlendAmountDecimalSlider': {
-            'level': 3,
+            'level': 2,
             'label': 'Blend Amount',
             'min_value': '0.00',
             'max_value': '1.00',
