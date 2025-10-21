@@ -32,10 +32,6 @@ class FaceEditors:
         self._face_reaging_labels = torch.tensor([1, 7, 8, 10, 12, 13], device=self.models_processor.device)
         self._face_reaging_soft_mask_kernel = 31
         self._face_reaging_soft_mask_sigma = 6.0
-        self._face_reaging_backend = FaceReagingBackend(self.models_processor.device)
-        self._face_reaging_model_map = self._face_reaging_backend.available_models()
-        self._face_reaging_warning_emitted: dict[str, bool] = {}
-        self._face_reaging_debug_logged: dict[str, bool] = {}
 
     def load_lip_array(self):
         with open(f'{models_dir}/liveportrait_onnx/lip_array.pkl', 'rb') as f:
@@ -88,23 +84,6 @@ class FaceEditors:
         blurred = self._gaussian_blur(mask, self._face_reaging_soft_mask_kernel, self._face_reaging_soft_mask_sigma)
         blurred = torch.clamp(blurred, 0, 1)
         return blurred
-
-    def _run_face_reaging_backend(
-        self,
-        normalized_face: torch.Tensor,
-        current_age: float,
-        target_age: float,
-        model_key: str,
-    ) -> torch.Tensor | None:
-        backend_result = self._face_reaging_backend(normalized_face, current_age, target_age, model_key)
-        if backend_result is None:
-            return None
-        if backend_result.shape != normalized_face.shape:
-            backend_result = torch.nn.functional.interpolate(
-                backend_result.unsqueeze(0), size=normalized_face.shape[-2:], mode='bilinear', align_corners=False
-            ).squeeze(0)
-        return torch.clamp(backend_result, 0.0, 1.0)
-
         
     def lp_motion_extractor(self, img, face_editor_type='Human-Face', **kwargs) -> dict:
         kp_info = {}
@@ -662,44 +641,12 @@ class FaceEditors:
         return out, combined_mask.unsqueeze(0)
 
     def apply_face_reaging(self, img: torch.Tensor, parameters: dict) -> torch.Tensor:
-        enabled_value = parameters.get('FaceReagingEnableToggle')
-        if isinstance(enabled_value, str):
-            enabled = enabled_value.strip().lower() in {'1', 'true', 'yes', 'on'}
-        else:
-            enabled = bool(enabled_value)
+        age_shift = parameters['FaceReagingAgeShiftSlider']
+        strength = parameters['FaceReagingStrengthDecimalSlider']
+        blend = parameters['FaceReagingBlendAmountDecimalSlider']
 
-        if not enabled:
+        if age_shift == 0 or strength <= 0 or blend <= 0:
             return img
-
-        strength = float(parameters.get('FaceReagingStrengthDecimalSlider', 0.6))
-        blend = float(parameters.get('FaceReagingBlendAmountDecimalSlider', 0.8))
-
-        if strength <= 0 or blend <= 0:
-            return img
-
-        target_age = float(parameters.get('FaceReagingTargetAgeSlider', 45))
-        current_age = float(parameters.get('FaceReagingCurrentAgeSlider', max(target_age - 10, 0)))
-        manual_shift = float(parameters.get('FaceReagingAgeShiftSlider', 0)) if 'FaceReagingAgeShiftSlider' in parameters else 0.0
-        if manual_shift != 0:
-            target_age = current_age + manual_shift
-
-        target_age = max(0.0, min(target_age, 100.0))
-        current_age = max(0.0, min(current_age, 100.0))
-
-        model_label = parameters.get('FaceReagingModelSelection', self._face_reaging_backend.default_label)
-        model_key = self._face_reaging_backend.resolve_label(model_label)
-        selected_label = next(
-            (label for label, key in self._face_reaging_model_map.items() if key == model_key),
-            model_label if model_label else self._face_reaging_backend.default_label,
-        )
-
-        if not self._face_reaging_debug_logged.get(model_key, False):
-            debug_suffix = f", manual shift={manual_shift:+.1f}" if manual_shift != 0 else ""
-            print(
-                f"[FaceReaging] Using {selected_label} (key={model_key}) "
-                f"current={current_age:.1f}, target={target_age:.1f}, strength={strength:.2f}, blend={blend:.2f}{debug_suffix}"
-            )
-            self._face_reaging_debug_logged[model_key] = True
 
         img_float = img.to(dtype=torch.float32)
         parsing = self._get_face_parsing(img_float)
@@ -713,21 +660,44 @@ class FaceEditors:
         soft_mask = soft_mask.expand_as(img_float)
 
         normalized = torch.clamp(img_float / 255.0, 0.0, 1.0)
-
-        backend_face = self._run_face_reaging_backend(normalized, current_age, target_age, model_key)
-        if backend_face is None:
-            if not self._face_reaging_warning_emitted.get(model_key, False):
-                status = self._face_reaging_backend.status(model_key)
-                reason = status.error if status and status.error else "backend unavailable"
-                print(f"[FaceReaging] {selected_label} unavailable: {reason}")
-                self._face_reaging_warning_emitted[model_key] = True
+        abs_shift = min(abs(age_shift) / 50.0, 1.0)
+        if abs_shift == 0:
             return img
 
-        aged_face = torch.lerp(normalized, backend_face, max(0.0, min(strength, 1.0)))
+        kernel = int(max(3, 2 * int(abs(age_shift) // 5) + 3))
+        sigma = max(1.2, abs(age_shift) / 12.0)
+
+        base_blur = self._gaussian_blur(normalized, kernel, sigma)
+        detail = normalized - base_blur
+        detail = torch.clamp(detail, -1.0, 1.0)
+
+        luma = 0.299 * normalized[0] + 0.587 * normalized[1] + 0.114 * normalized[2]
+        luma = luma.unsqueeze(0)
+        shading = self._gaussian_blur(luma, kernel + 2, sigma * 1.5)
+        shading = shading.squeeze(0)
+
+        if age_shift > 0:
+            wrinkle_strength = (0.5 + 0.5 * strength) * abs_shift
+            wrinkle_map = torch.clamp(detail * wrinkle_strength + (shading - luma) * 0.35 * strength, -0.5, 0.5)
+            aged_face = normalized + wrinkle_map
+
+            tone_shift = torch.tensor([0.95, 0.90, 0.85], dtype=torch.float32, device=img_float.device).view(3, 1, 1)
+            tone_mix = strength * abs_shift * 0.18
+            aged_face = aged_face * (1 - tone_mix) + tone_shift * tone_mix
+        else:
+            smooth_strength = (0.45 + 0.55 * strength) * abs_shift
+            smooth_face = normalized * (1 - smooth_strength) + base_blur * smooth_strength
+
+            glow = torch.tensor([1.04, 1.03, 1.01], dtype=torch.float32, device=img_float.device).view(3, 1, 1)
+            highlight = self._gaussian_blur(normalized, kernel + 4, sigma * 1.8)
+            rejuvenated = torch.clamp(smooth_face + (highlight - base_blur) * 0.25 * strength, 0, 1)
+            aged_face = torch.clamp(rejuvenated * glow, 0, 1)
+
+        aged_face = torch.clamp(aged_face, 0, 1)
 
         blend_mask = torch.clamp(soft_mask * blend, 0, 1)
         blended = normalized * (1 - blend_mask) + aged_face * blend_mask
         result = normalized * (1 - soft_mask) + blended * soft_mask
         result = torch.clamp(result, 0, 1)
 
-        return torch.clamp(result * 255.0, 0, 255).type(img.dtype).contiguous()
+        return torch.clamp(result * 255.0, 0, 255).type(img.dtype)
