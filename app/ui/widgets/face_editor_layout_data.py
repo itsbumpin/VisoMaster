@@ -451,5 +451,79 @@ FACE_EDITOR_LAYOUT_DATA: LayoutDictTypes = {
             'requiredToggleValue': True,
             'help': 'Blend the value: 0.0 represents the original color, 1.0 represents the full target color.'
         },
+    },
+    'Face Re-Aging': {
+        'FaceReagingEnableToggle': {
+            'level': 1,
+            'label': 'Enable Face Re-Aging',
+            'default': False,
+            'help': 'Enable the face re-aging filter to adjust the perceived age of the face.'
+        },
+        'FaceReagingModelSelection': {
+            'level': 2,
+            'label': 'Re-Aging Model',
+            'options': ['Face Aging GAN', 'SAM De-Aging'],
+            'default': 'Face Aging GAN',
+            'parentToggle': 'FaceReagingEnableToggle',
+            'requiredToggleValue': True,
+            'help': 'Choose which backend to use. SAM prioritises de-aging while the GAN handles age increases.'
+        },
+        'FaceReagingCurrentAgeSlider': {
+            'level': 3,
+            'label': 'Current Age',
+            'min_value': '10',
+            'max_value': '80',
+            'default': '30',
+            'step': 1,
+            'parentToggle': 'FaceReagingEnableToggle',
+            'requiredToggleValue': True,
+            'help': 'Approximate age of the person in the source footage.'
+        },
+        'FaceReagingTargetAgeSlider': {
+            'level': 3,
+            'label': 'Target Age',
+            'min_value': '10',
+            'max_value': '80',
+            'default': '45',
+            'step': 1,
+            'parentToggle': 'FaceReagingEnableToggle',
+            'requiredToggleValue': True,
+            'help': 'Desired age for the re-aged face. The model will age up or down from the current age.'
+        },
+        'FaceReagingAgeShiftSlider': {
+            'level': 3,
+            'label': 'Manual Age Offset',
+            'min_value': '-50',
+            'max_value': '50',
+            'default': '0',
+            'step': 1,
+            'parentToggle': 'FaceReagingEnableToggle',
+            'requiredToggleValue': True,
+            'help': 'Optional manual override. Positive values age up and negative values rejuvenate regardless of the age sliders.'
+        },
+        'FaceReagingStrengthDecimalSlider': {
+            'level': 3,
+            'label': 'Effect Strength',
+            'min_value': '0.00',
+            'max_value': '1.00',
+            'default': '0.60',
+            'step': 0.05,
+            'decimals': 2,
+            'parentToggle': 'FaceReagingEnableToggle',
+            'requiredToggleValue': True,
+            'help': 'Controls how strongly the model alters the perceived age.'
+        },
+        'FaceReagingBlendAmountDecimalSlider': {
+            'level': 3,
+            'label': 'Blend Amount',
+            'min_value': '0.00',
+            'max_value': '1.00',
+            'default': '0.80',
+            'step': 0.05,
+            'decimals': 2,
+            'parentToggle': 'FaceReagingEnableToggle',
+            'requiredToggleValue': True,
+            'help': 'Blends between the original face and the re-aged result.'
+        },
     }
 }
