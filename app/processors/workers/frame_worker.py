@@ -1193,6 +1193,10 @@ class FrameWorker(threading.Thread):
 
     def swap_edit_face_core(self, img, kps, parameters, control, **kwargs): # img = RGB
         # Grab 512 face from image and create 256 and 128 copys
+        lmk_crop = None
+        M_o2c = None
+        M_c2o = None
+        original_face_512 = None
         if parameters['FaceEditorEnableToggle']:
             # Scaling Transforms
             t256 = v2.Resize((256, 256), interpolation=v2.InterpolationMode.BILINEAR, antialias=False)
@@ -1296,11 +1300,46 @@ class FrameWorker(threading.Thread):
                 img = torch.mul(img, 255.0)
                 img = torch.clamp(img, 0, 255).type(torch.uint8)
 
-        if parameters['FaceMakeupEnableToggle'] or parameters['HairMakeupEnableToggle'] or parameters['EyeBrowsMakeupEnableToggle'] or parameters['LipsMakeupEnableToggle']:
-            _, lmk_crop, _ = self.models_processor.run_detect_landmark( img, bbox=[], det_kpss=kps, detect_mode='203', score=0.5, from_points=True)
+        reaging_enabled = parameters.get('FaceReagingEnableToggle')
+        if isinstance(reaging_enabled, str):
+            reaging_enabled = reaging_enabled.strip().lower() in {'1', 'true', 'yes', 'on'}
+        else:
+            reaging_enabled = bool(reaging_enabled)
 
-            # prepare_retargeting_image
-            original_face_512, M_o2c, M_c2o = faceutil.warp_face_by_face_landmark_x(img, lmk_crop, dsize=512, scale=parameters['FaceEditorCropScaleDecimalSlider'], vy_ratio=parameters['FaceEditorVYRatioDecimalSlider'], interpolation=v2.InterpolationMode.BILINEAR)
+        if reaging_enabled:
+            if lmk_crop is None:
+                _, lmk_crop, _ = self.models_processor.run_detect_landmark(img, bbox=[], det_kpss=kps, detect_mode='203', score=0.5, from_points=True)
+
+            if original_face_512 is None or M_c2o is None:
+                original_face_512, M_o2c, M_c2o = faceutil.warp_face_by_face_landmark_x(
+                    img,
+                    lmk_crop,
+                    dsize=512,
+                    scale=parameters['FaceEditorCropScaleDecimalSlider'],
+                    vy_ratio=parameters['FaceEditorVYRatioDecimalSlider'],
+                    interpolation=v2.InterpolationMode.BILINEAR
+                )
+
+            reaged_face = self.models_processor.apply_face_reaging(original_face_512, parameters)
+            reaged_face = torch.clamp(torch.div(reaged_face.to(dtype=torch.float32), 255.0), 0, 1)
+
+            blur_kernel_size = parameters['FaceEditorBlurAmountSlider'] * 2 + 1
+            if blur_kernel_size > 1:
+                gauss = transforms.GaussianBlur(blur_kernel_size, (parameters['FaceEditorBlurAmountSlider'] + 1) * 0.2)
+                mask_crop = gauss(self.models_processor.lp_mask_crop)
+            else:
+                mask_crop = self.models_processor.lp_mask_crop
+
+            img = faceutil.paste_back_adv(reaged_face, M_c2o, img, mask_crop)
+            dtype = original_face_512.dtype if original_face_512 is not None else torch.float32
+            original_face_512 = torch.clamp(reaged_face * 255.0, 0, 255).to(dtype=dtype)
+
+        if parameters['FaceMakeupEnableToggle'] or parameters['HairMakeupEnableToggle'] or parameters['EyeBrowsMakeupEnableToggle'] or parameters['LipsMakeupEnableToggle']:
+            if lmk_crop is None:
+                _, lmk_crop, _ = self.models_processor.run_detect_landmark( img, bbox=[], det_kpss=kps, detect_mode='203', score=0.5, from_points=True)
+
+            if original_face_512 is None or M_c2o is None:
+                original_face_512, M_o2c, M_c2o = faceutil.warp_face_by_face_landmark_x(img, lmk_crop, dsize=512, scale=parameters['FaceEditorCropScaleDecimalSlider'], vy_ratio=parameters['FaceEditorVYRatioDecimalSlider'], interpolation=v2.InterpolationMode.BILINEAR)
 
             out, mask_out = self.models_processor.apply_face_makeup(original_face_512, parameters)
             if 1:
