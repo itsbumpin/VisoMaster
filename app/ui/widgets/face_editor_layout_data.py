@@ -33,9 +33,44 @@ FACE_EDITOR_LAYOUT_DATA: LayoutDictTypes = {
         },
         'FaceReagingEnableToggle': {
             'level': 1,
-            'label': 'Enable Face Re-Aging',
+            'label': 'Face Re-Aging',
             'default': False,
             'help': 'Enable the face re-aging filter to adjust the perceived age of the face.'
+        },
+        'FaceReagingAgeShiftSlider': {
+            'level': 2,
+            'label': 'Age Shift',
+            'min_value': '-40',
+            'max_value': '40',
+            'default': '0',
+            'step': 1,
+            'parentToggle': 'FaceReagingEnableToggle',
+            'requiredToggleValue': True,
+            'help': 'Negative values rejuvenate, positive values add age-related details.'
+        },
+        'FaceReagingStrengthDecimalSlider': {
+            'level': 2,
+            'label': 'Effect Strength',
+            'min_value': '0.00',
+            'max_value': '1.00',
+            'default': '0.60',
+            'step': 0.05,
+            'decimals': 2,
+            'parentToggle': 'FaceReagingEnableToggle',
+            'requiredToggleValue': True,
+            'help': 'Controls how strongly the model alters the perceived age.'
+        },
+        'FaceReagingBlendAmountDecimalSlider': {
+            'level': 2,
+            'label': 'Blend Amount',
+            'min_value': '0.00',
+            'max_value': '1.00',
+            'default': '0.80',
+            'step': 0.05,
+            'decimals': 2,
+            'parentToggle': 'FaceReagingEnableToggle',
+            'requiredToggleValue': True,
+            'help': 'Blends between the original face and the re-aged result.'
         },
         'FaceEditorEnableToggle': {
             'level': 1,
@@ -459,6 +494,12 @@ FACE_EDITOR_LAYOUT_DATA: LayoutDictTypes = {
         },
     },
     'Face Re-Aging': {
+        'FaceReagingEnableToggle': {
+            'level': 1,
+            'label': 'Face Re-Aging',
+            'default': False,
+            'help': 'Enable the face re-aging filter to adjust the perceived age of the face.'
+        },
         'FaceReagingModelSelection': {
             'level': 1,
             'label': 'Re-Aging Model',
