@@ -31,12 +31,6 @@ FACE_EDITOR_LAYOUT_DATA: LayoutDictTypes = {
             'step': 1,
             'help': 'Blur amount.'
         },
-        'FaceReagingEnableToggle': {
-            'level': 1,
-            'label': 'Face Re-Aging',
-            'default': False,
-            'help': 'Enable the face re-aging filter to adjust the perceived age of the face.'
-        },
         'FaceReagingAgeShiftSlider': {
             'level': 2,
             'label': 'Age Shift',
