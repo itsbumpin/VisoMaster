@@ -648,7 +648,10 @@ class FaceEditors:
         if age_shift == 0 or strength <= 0 or blend <= 0:
             return img
 
-        img_float = img.to(dtype=torch.float32)
+        original_device = img.device
+        processing_device = getattr(self.models_processor, "device", original_device)
+
+        img_float = img.to(device=processing_device, dtype=torch.float32)
         parsing = self._get_face_parsing(img_float)
 
         face_mask = torch.isin(parsing, self._face_reaging_labels)
@@ -700,4 +703,7 @@ class FaceEditors:
         result = normalized * (1 - soft_mask) + blended * soft_mask
         result = torch.clamp(result, 0, 1)
 
-        return torch.clamp(result * 255.0, 0, 255).type(img.dtype)
+        result = torch.clamp(result * 255.0, 0, 255).to(dtype=img.dtype)
+        if result.device != original_device:
+            result = result.to(device=original_device)
+        return result
