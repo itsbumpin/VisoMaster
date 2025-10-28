@@ -1296,9 +1296,19 @@ class FrameWorker(threading.Thread):
                 mask_crop = gauss(self.models_processor.lp_mask_crop)
                 img = faceutil.paste_back_adv(out, M_c2o, img, mask_crop)
             else:
-                img = out                
+                img = out
                 img = torch.mul(img, 255.0)
                 img = torch.clamp(img, 0, 255).type(torch.uint8)
+
+            # Refresh the face crop so downstream operations (e.g., re-aging) operate on the edited face.
+            original_face_512, M_o2c, M_c2o = faceutil.warp_face_by_face_landmark_x(
+                img,
+                lmk_crop,
+                dsize=512,
+                scale=parameters['FaceEditorCropScaleDecimalSlider'],
+                vy_ratio=parameters['FaceEditorVYRatioDecimalSlider'],
+                interpolation=v2.InterpolationMode.BILINEAR
+            )
 
         if parameters['FaceReagingEnableToggle']:
             if lmk_crop is None:
