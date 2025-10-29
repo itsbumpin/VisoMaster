@@ -5,6 +5,7 @@ from pathlib import Path
 from typing import Dict, Optional, Tuple
 
 import torch
+
 import torch.nn as nn
 import torch.nn.functional as F
 
@@ -153,9 +154,9 @@ def _normalise_state_dict(state_dict: Dict[str, torch.Tensor]) -> Dict[str, torc
 class FaceReagingBackend:
     """Wrapper that loads the official face re-aging UNet if available."""
 
-    def __init__(self, device: str | torch.device) -> None:
+    def __init__(self, device: str | torch.device, model_path: Path | None = None) -> None:
         self.device = torch.device(device) if not isinstance(device, torch.device) else device
-        self.model_path = Path(models_dir) / "face_reaging" / "best_unet_model.pth"
+        self.model_path = Path(model_path) if model_path is not None else Path(models_dir) / "face_reaging" / "best_unet_model.pth"
         self.model_path.parent.mkdir(parents=True, exist_ok=True)
         self.model: Optional[nn.Module] = None
         self.status = _BackendStatus(is_ready=False, error=None)
@@ -168,7 +169,10 @@ class FaceReagingBackend:
 
     def _load(self) -> None:
         if not self.model_path.exists():
-            self.status = _BackendStatus(is_ready=False, error="Missing best_unet_model.pth checkpoint")
+            self.status = _BackendStatus(
+                is_ready=False,
+                error=f"Missing checkpoint at {self.model_path}",
+            )
             return
 
         try:

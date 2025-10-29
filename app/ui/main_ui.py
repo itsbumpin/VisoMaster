@@ -190,6 +190,9 @@ class MainWindow(QtWidgets.QMainWindow, Ui_MainWindow):
         # Create a control value for OutputMediaFolder
         common_widget_actions.create_control(self, 'OutputMediaFolder', '')
 
+        overrides = self.control.get('ModelWeightsOverridesWidget', {})
+        self.models_processor.update_model_path_overrides(overrides)
+
         # Initialize current_widget_parameters with default values
         self.current_widget_parameters = ParametersDict(copy.deepcopy(self.default_parameters), self.default_parameters)
 

@@ -3,6 +3,7 @@ import os
 import subprocess as sp
 import gc
 import traceback
+from pathlib import Path
 from typing import Dict, TYPE_CHECKING
 
 from packaging import version
@@ -79,6 +80,7 @@ class ModelsProcessor(QtCore.QObject):
             self.models_data[model_name] = {'local_path': model_data['local_path'], 'hash': model_data['hash'], 'url': model_data.get('url')}
 
         self.dfm_models: Dict[str, DFMModel] = {}
+        self.model_path_overrides: Dict[str, str] = {}
 
         if TENSORRT_AVAILABLE:
             # Initialize models_trt and models_trt_path
@@ -128,10 +130,12 @@ class ModelsProcessor(QtCore.QObject):
             # QApplication.processEvents()
             # if not is_file_exists(self.models_path[model_name]):
             #     download_file(model_name, self.models_path[model_name], self.models_data[model_name]['hash'], self.models_data[model_name]['url'])
+            resolved_model_path = self.resolve_model_path(f"onnx:{model_name}", self.models_path[model_name])
+            resolved_model_path_str = str(resolved_model_path)
             if session_options is None:
-                model_instance = onnxruntime.InferenceSession(self.models_path[model_name], providers=self.providers)
+                model_instance = onnxruntime.InferenceSession(resolved_model_path_str, providers=self.providers)
             else:
-                model_instance = onnxruntime.InferenceSession(self.models_path[model_name], sess_options=session_options, providers=self.providers)
+                model_instance = onnxruntime.InferenceSession(resolved_model_path_str, sess_options=session_options, providers=self.providers)
 
             # Check if another thread has already loaded an instance for this model, if yes then delete the current one and return that instead
             if self.models[model_name]:
@@ -169,7 +173,8 @@ class ModelsProcessor(QtCore.QObject):
         self.main_window.model_loading_signal.emit()
 
         if not os.path.exists(self.models_trt_path[model_name]):
-            onnx2trt(onnx_model_path=self.models_path[model_name],
+            resolved_model_path = self.resolve_model_path(f"onnx:{model_name}", self.models_path[model_name])
+            onnx2trt(onnx_model_path=str(resolved_model_path),
                      trt_model_path=self.models_trt_path[model_name],
                      precision=precision,
                      custom_plugin_path=custom_plugin_path,
@@ -179,6 +184,36 @@ class ModelsProcessor(QtCore.QObject):
 
         self.main_window.model_loaded_signal.emit()
         return model_instance
+
+    def update_model_path_overrides(self, overrides: Dict[str, str]):
+        sanitized: Dict[str, str] = {}
+        for key, value in overrides.items():
+            if not value:
+                continue
+            sanitized[key] = value
+        with self.model_lock:
+            self.model_path_overrides = sanitized
+        if hasattr(self.face_editors, 'invalidate_face_reaging_backend'):
+            self.face_editors.invalidate_face_reaging_backend()
+
+    def resolve_model_path(self, identifier: str, default_path: str | Path) -> Path:
+        default_path = Path(default_path)
+        candidate_keys = [identifier, default_path.name, str(default_path)]
+        with self.model_lock:
+            overrides = dict(self.model_path_overrides)
+        for key in candidate_keys:
+            override_value = overrides.get(key)
+            if not override_value:
+                continue
+            override_path = Path(override_value).expanduser()
+            if override_path.is_dir():
+                candidate_path = override_path / default_path.name
+                if candidate_path.is_file():
+                    return candidate_path
+            if override_path.is_file():
+                return override_path
+            print(f"[ModelsProcessor] Override path for '{key}' does not exist: {override_path}", flush=True)
+        return default_path
 
     def delete_models(self):
         for model_name, model_instance in self.models.items():
@@ -277,7 +312,8 @@ class ModelsProcessor(QtCore.QObject):
         with self.model_lock:
             if not self.models[model_name]:
                 self.main_window.model_loading_signal.emit()
-                graph = onnx.load(self.models_path[model_name]).graph
+                resolved_model_path = self.resolve_model_path(f"onnx:{model_name}", self.models_path[model_name])
+                graph = onnx.load(str(resolved_model_path)).graph
                 self.emap = onnx.numpy_helper.to_array(graph.initializer[-1])
                 self.main_window.model_loaded_signal.emit()
 
