@@ -94,10 +94,14 @@ class FaceEditors:
                     status_error = self._face_reaging_backend.status.error
                     print(
                         "[FaceEditors] SAM re-aging backend is not ready"
-                        + (f": {status_error}" if status_error else ".")
+                        + (f": {status_error}" if status_error else "."),
+                        flush=True,
                     )
             except Exception as backend_error:  # pragma: no cover - defensive fallback
-                print(f"[FaceEditors] Failed to initialise SAM re-aging backend: {backend_error}")
+                print(
+                    f"[FaceEditors] Failed to initialise SAM re-aging backend: {backend_error}",
+                    flush=True,
+                )
                 self._face_reaging_backend = None
         return self._face_reaging_backend
 
@@ -117,7 +121,8 @@ class FaceEditors:
                 backend_error = backend.status.error
             print(
                 "[FaceEditors] SAM re-aging backend unavailable"
-                + (f": {backend_error}" if backend_error else ".")
+                + (f": {backend_error}" if backend_error else "."),
+                flush=True,
             )
             return None
 
@@ -130,14 +135,18 @@ class FaceEditors:
         try:
             backend_output = backend(normalized, current_age, effective_target)
         except Exception as runtime_error:  # pragma: no cover - defensive fallback
-            print(f"[FaceEditors] SAM re-aging backend raised an exception: {runtime_error}")
+            print(
+                f"[FaceEditors] SAM re-aging backend raised an exception: {runtime_error}",
+                flush=True,
+            )
             return None
 
         if backend_output is None:
             backend_error = backend.status.error if backend is not None else None
             print(
                 "[FaceEditors] SAM re-aging backend returned no result"
-                + (f": {backend_error}" if backend_error else ".")
+                + (f": {backend_error}" if backend_error else "."),
+                flush=True,
             )
             return None
 
@@ -730,7 +739,10 @@ class FaceEditors:
             result = self._apply_sam_face_reaging(normalized, soft_mask, parameters, strength, age_shift, blend)
             if result is not None:
                 return torch.clamp(result * 255.0, 0, 255).type(img.dtype)
-            print("[FaceEditors] Falling back to Face Aging GAN pipeline for re-aging.")
+            print(
+                "[FaceEditors] Falling back to Face Aging GAN pipeline for re-aging.",
+                flush=True,
+            )
 
         if age_shift == 0 or strength <= 0:
             return img
