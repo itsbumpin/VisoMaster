@@ -169,9 +169,21 @@ class FaceReagingBackend:
 
     def _load(self) -> None:
         if not self.model_path.exists():
+            alt_checkpoint = self.model_path.with_name("sam_ffhq_aging.pt")
+            if alt_checkpoint.exists():
+                error = (
+                    f"Found {alt_checkpoint.name}, but SAM re-aging requires "
+                    f"best_unet_model.pth from the official Re-Aging release."
+                )
+            else:
+                error = (
+                    f"Missing checkpoint at {self.model_path}. Download "
+                    f"best_unet_model.pth from the Re-Aging repository and place "
+                    f"it here."
+                )
             self.status = _BackendStatus(
                 is_ready=False,
-                error=f"Missing checkpoint at {self.model_path}",
+                error=error,
             )
             return
 
