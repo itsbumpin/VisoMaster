@@ -1,5 +1,4 @@
 import pickle
-from pathlib import Path
 from typing import TYPE_CHECKING, Optional
 import platform
 
@@ -90,15 +89,7 @@ class FaceEditors:
     def _get_face_reaging_backend(self) -> Optional[FaceReagingBackend]:
         if self._face_reaging_backend is None:
             try:
-                default_model_path = Path(models_dir) / "face_reaging" / "best_unet_model.pth"
-                resolved_path = self.models_processor.resolve_model_path(
-                    "face_reaging_best_unet",
-                    default_model_path,
-                )
-                self._face_reaging_backend = FaceReagingBackend(
-                    self.models_processor.device,
-                    model_path=resolved_path,
-                )
+                self._face_reaging_backend = FaceReagingBackend(self.models_processor.device)
                 if not self._face_reaging_backend.is_ready:
                     status_error = self._face_reaging_backend.status.error
                     print(
@@ -113,9 +104,6 @@ class FaceEditors:
                 )
                 self._face_reaging_backend = None
         return self._face_reaging_backend
-
-    def invalidate_face_reaging_backend(self) -> None:
-        self._face_reaging_backend = None
 
     def _apply_sam_face_reaging(
         self,
