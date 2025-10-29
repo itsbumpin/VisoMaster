@@ -1,4 +1,4 @@
-from typing import TYPE_CHECKING
+from typing import TYPE_CHECKING, Dict, Optional
 import torch
 import qdarkstyle
 from PySide6 import QtWidgets 
@@ -48,6 +48,12 @@ def change_theme(main_window: 'MainWindow', new_theme):
     app.setStyleSheet(_style)
 
     main_window.update()  # Aggiorna la finestra principale
+
+
+def update_model_path_overrides(main_window: 'MainWindow', overrides: Optional[Dict[str, str]]):
+    if overrides is None:
+        overrides = {}
+    main_window.models_processor.update_model_path_overrides(overrides)
 
 def set_video_playback_fps(main_window: 'MainWindow', set_video_fps=False):
     # print("Called set_video_playback_fps()")

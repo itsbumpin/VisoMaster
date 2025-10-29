@@ -1,5 +1,8 @@
+from pathlib import Path
+
 from app.ui.widgets.actions import control_actions
 import cv2
+from app.processors.models_data import models_dir
 from app.helpers.typing_helper import LayoutDictTypes
 SETTINGS_LAYOUT_DATA: LayoutDictTypes = {
     'Appearance': {
@@ -171,6 +174,25 @@ SETTINGS_LAYOUT_DATA: LayoutDictTypes = {
             'step': 1,
             'help': "Set the maximum number of DFM Models to keep in memory at a time. Set this based on your GPU's VRAM",
         }
+    },
+    'Model Paths': {
+        'ModelWeightsOverridesWidget': {
+            'level': 1,
+            'label': 'Model Weights Overrides',
+            'default': {},
+            'help': 'Map model identifiers or filenames to custom checkpoint locations when files are stored outside the default model_assets directory.',
+            'predefined_models': [
+                {
+                    'key': 'face_reaging_best_unet',
+                    'label': 'SAM Re-Aging best_unet_model.pth',
+                    'default_path': str(Path(models_dir) / 'face_reaging' / 'best_unet_model.pth'),
+                },
+            ],
+            'dialog_caption': 'Select model checkpoint',
+            'file_filter': 'Model checkpoints (*.pth *.pt *.onnx *.engine *.trt);;All files (*)',
+            'exec_function': control_actions.update_model_path_overrides,
+            'exec_function_args': [],
+        },
     },
     'Frame Enhancer':{
         'FrameEnhancerEnableToggle':{

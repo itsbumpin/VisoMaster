@@ -225,6 +225,35 @@ def add_widgets_to_tab_layout(main_window: 'MainWindow', LAYOUT_DATA: LayoutDict
 
                 widget.line_edit.textChanged.connect(partial(onchange_line_edit, widget, widget_name, widget_data))
 
+            elif 'Overrides' in widget_name:
+                widget = widget_components.ModelPathOverridesWidget(
+                    widget_name=widget_name,
+                    group_layout_data=widgets,
+                    label_widget=label,
+                    main_window=main_window,
+                    default_value=widget_data.get('default', {}),
+                    predefined_models=widget_data.get('predefined_models', []),
+                    dialog_caption=widget_data.get('dialog_caption', 'Select file'),
+                    file_filter=widget_data.get('file_filter', 'All files (*)'),
+                    exec_function=widget_data.get('exec_function'),
+                    exec_function_args=widget_data.get('exec_function_args', []),
+                )
+                widget.reset_default_button = widget_components.ParameterResetDefaultButton(related_widget=widget)
+
+                horizontal_layout = add_horizontal_layout_to_category(category_layout, label, widget, widget.reset_default_button)
+
+                if data_type == 'control':
+                    common_widget_actions.create_control(main_window, widget_name, widget.get_value())
+                    common_widget_actions.update_control(
+                        main_window,
+                        widget_name,
+                        widget.get_value(),
+                        exec_function=widget_data.get('exec_function'),
+                        exec_function_args=widget_data.get('exec_function_args', []),
+                    )
+                else:
+                    common_widget_actions.create_default_parameter(main_window, widget_name, widget.get_value())
+
             elif 'Text' in widget_name:
                 widget = widget_components.ParameterText(label=widget_data['label'], widget_name=widget_name, group_layout_data=widgets, label_widget=label, default_value=widget_data['default'], fixed_width=widget_data['width'], main_window=main_window, data_type=data_type, exec_function=widget_data.get('exec_function'), exec_function_args=widget_data.get('exec_function_args', []))
                 widget.reset_default_button = widget_components.ParameterResetDefaultButton(related_widget=widget)

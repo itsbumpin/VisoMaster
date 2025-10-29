@@ -1,7 +1,9 @@
 # pylint: disable=keyword-arg-before-vararg
+import copy
 import os
 from functools import partial
 import uuid
+from pathlib import Path
 from typing import TYPE_CHECKING, Dict
 
 from PySide6 import QtWidgets, QtGui, QtCore
@@ -1294,6 +1296,176 @@ class ParameterLineDecimalEdit(QtWidgets.QLineEdit):
     def get_value(self) -> float:
         """Get the current value from the line edit."""
         return float(self.text())
+
+class ModelPathOverridesWidget(QtWidgets.QWidget, ParametersWidget):
+    def __init__(
+        self,
+        default_value: Dict[str, str] | None = None,
+        predefined_models: list[dict] | None = None,
+        dialog_caption: str = 'Select file',
+        file_filter: str = 'All files (*)',
+        *args,
+        **kwargs,
+    ):
+        super().__init__(*args, **kwargs)
+        ParametersWidget.__init__(self, *args, **kwargs)
+        self.default_value = copy.deepcopy(default_value or {})
+        self.exec_function = kwargs.get('exec_function')
+        self.exec_function_args = kwargs.get('exec_function_args', [])
+        self.dialog_caption = dialog_caption
+        self.file_filter = file_filter
+        self.predefined_models = predefined_models or []
+
+        self._overrides: Dict[str, str] = {}
+        self._predefined_lookup = {entry['key']: entry for entry in self.predefined_models}
+
+        layout = QtWidgets.QVBoxLayout(self)
+        layout.setContentsMargins(0, 0, 0, 0)
+
+        self.tree_widget = QtWidgets.QTreeWidget(self)
+        self.tree_widget.setColumnCount(3)
+        self.tree_widget.setHeaderLabels(['Model', 'Override Path', 'Default Location'])
+        self.tree_widget.setRootIsDecorated(False)
+        self.tree_widget.setAlternatingRowColors(True)
+        self.tree_widget.setSelectionMode(QtWidgets.QAbstractItemView.SingleSelection)
+        layout.addWidget(self.tree_widget)
+
+        button_layout = QtWidgets.QHBoxLayout()
+        self.add_button = QtWidgets.QPushButton('Add Override', self)
+        self.browse_button = QtWidgets.QPushButton('Browse…', self)
+        self.remove_button = QtWidgets.QPushButton('Remove', self)
+        button_layout.addWidget(self.add_button)
+        button_layout.addWidget(self.browse_button)
+        button_layout.addWidget(self.remove_button)
+        button_layout.addStretch()
+        layout.addLayout(button_layout)
+
+        self.add_button.clicked.connect(self._on_add_override)
+        self.browse_button.clicked.connect(self._on_browse_override)
+        self.remove_button.clicked.connect(self._on_remove_override)
+        self.tree_widget.itemDoubleClicked.connect(lambda *_: self._on_browse_override())
+
+        self.set_value(self.default_value)
+
+    def _collect_all_keys(self) -> list[str]:
+        keys: list[str] = []
+        for entry in self.predefined_models:
+            key = entry['key']
+            if key not in keys:
+                keys.append(key)
+        for key in self._overrides.keys():
+            if key not in keys:
+                keys.append(key)
+        return keys
+
+    def _refresh_view(self) -> None:
+        self.tree_widget.blockSignals(True)
+        self.tree_widget.clear()
+        for key in self._collect_all_keys():
+            override_path = self._overrides.get(key, '')
+            predefined = self._predefined_lookup.get(key, {})
+            label = predefined.get('label', key)
+            default_path = predefined.get('default_path', '')
+            item = QtWidgets.QTreeWidgetItem([label, override_path, default_path])
+            item.setData(0, QtCore.Qt.ItemDataRole.UserRole, key)
+            if override_path:
+                candidate = Path(override_path).expanduser()
+                if candidate.is_file():
+                    item.setIcon(0, self.style().standardIcon(QtWidgets.QStyle.StandardPixmap.SP_DialogApplyButton))
+                else:
+                    item.setForeground(1, QtGui.QColor('#d24c4c'))
+            else:
+                item.setForeground(1, QtGui.QColor('#888888'))
+            if default_path:
+                item.setToolTip(2, default_path)
+            self.tree_widget.addTopLevelItem(item)
+        self.tree_widget.resizeColumnToContents(0)
+        self.tree_widget.resizeColumnToContents(1)
+        self.tree_widget.blockSignals(False)
+
+    def _get_selected_key(self) -> str | None:
+        selected_items = self.tree_widget.selectedItems()
+        if not selected_items:
+            return None
+        return selected_items[0].data(0, QtCore.Qt.ItemDataRole.UserRole)
+
+    def _prompt_for_file(self, start_directory: str | None = None) -> str | None:
+        filename, _ = QtWidgets.QFileDialog.getOpenFileName(
+            self,
+            self.dialog_caption,
+            start_directory or '',
+            self.file_filter,
+        )
+        return filename or None
+
+    def _update_control(self) -> None:
+        if not self.main_window:
+            return
+        overrides_copy = copy.deepcopy(self._overrides)
+        common_widget_actions.update_control(
+            self.main_window,
+            self.widget_name,
+            overrides_copy,
+            exec_function=self.exec_function,
+            exec_function_args=self.exec_function_args,
+        )
+
+    def _on_add_override(self) -> None:
+        key, ok = QtWidgets.QInputDialog.getText(self, 'Add Model Override', 'Identifier or filename:')
+        key = key.strip()
+        if not ok or not key:
+            return
+        if key in self._collect_all_keys():
+            QtWidgets.QMessageBox.warning(self, 'Duplicate Identifier', 'An override with this identifier already exists.')
+            return
+        start_directory = ''
+        file_path = self._prompt_for_file(start_directory)
+        if not file_path:
+            return
+        self._overrides[key] = file_path
+        self._refresh_view()
+        self._update_control()
+
+    def _on_browse_override(self) -> None:
+        key = self._get_selected_key()
+        if not key:
+            return
+        current_value = self._overrides.get(key, '')
+        predefined = self._predefined_lookup.get(key, {})
+        default_path = predefined.get('default_path', '')
+        start_directory = current_value or default_path
+        if start_directory and not Path(start_directory).is_dir():
+            start_directory = str(Path(start_directory).expanduser().parent)
+        file_path = self._prompt_for_file(start_directory)
+        if not file_path:
+            return
+        self._overrides[key] = file_path
+        self._refresh_view()
+        self._update_control()
+
+    def _on_remove_override(self) -> None:
+        key = self._get_selected_key()
+        if not key:
+            return
+        if key in self._predefined_lookup:
+            self._overrides.pop(key, None)
+        elif key in self._overrides:
+            self._overrides.pop(key)
+        self._refresh_view()
+        self._update_control()
+
+    def reset_to_default_value(self):
+        self._overrides = copy.deepcopy(self.default_value)
+        self._refresh_view()
+        self._update_control()
+
+    def set_value(self, value: Dict[str, str] | None):
+        self._overrides = copy.deepcopy(value or {})
+        self._refresh_view()
+
+    def get_value(self) -> Dict[str, str]:
+        return copy.deepcopy(self._overrides)
+
 
 class ParameterText(QtWidgets.QLineEdit, ParametersWidget):
     def __init__(self, default_value: str, fixed_width: int = 130, max_length: int = 500, alignment: int = 0, *args, **kwargs):
