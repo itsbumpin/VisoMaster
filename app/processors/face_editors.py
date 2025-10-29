@@ -1,5 +1,5 @@
 import pickle
-from typing import TYPE_CHECKING
+from typing import TYPE_CHECKING, Optional
 import platform
 
 import torch
@@ -32,6 +32,7 @@ class FaceEditors:
         self._face_reaging_labels = torch.tensor([1, 7, 8, 10, 12, 13], device=self.models_processor.device)
         self._face_reaging_soft_mask_kernel = 31
         self._face_reaging_soft_mask_sigma = 6.0
+        self._face_reaging_backend: Optional[FaceReagingBackend] = None
 
     def load_lip_array(self):
         with open(f'{models_dir}/liveportrait_onnx/lip_array.pkl', 'rb') as f:
@@ -84,6 +85,69 @@ class FaceEditors:
         blurred = self._gaussian_blur(mask, self._face_reaging_soft_mask_kernel, self._face_reaging_soft_mask_sigma)
         blurred = torch.clamp(blurred, 0, 1)
         return blurred
+
+    def _get_face_reaging_backend(self) -> Optional[FaceReagingBackend]:
+        if self._face_reaging_backend is None:
+            try:
+                self._face_reaging_backend = FaceReagingBackend(self.models_processor.device)
+                if not self._face_reaging_backend.is_ready:
+                    status_error = self._face_reaging_backend.status.error
+                    print(
+                        "[FaceEditors] SAM re-aging backend is not ready"
+                        + (f": {status_error}" if status_error else ".")
+                    )
+            except Exception as backend_error:  # pragma: no cover - defensive fallback
+                print(f"[FaceEditors] Failed to initialise SAM re-aging backend: {backend_error}")
+                self._face_reaging_backend = None
+        return self._face_reaging_backend
+
+    def _apply_sam_face_reaging(
+        self,
+        normalized: torch.Tensor,
+        soft_mask: torch.Tensor,
+        parameters: dict,
+        strength: float,
+        age_shift: float,
+        blend: float,
+    ) -> Optional[torch.Tensor]:
+        backend = self._get_face_reaging_backend()
+        if backend is None or not backend.is_ready:
+            backend_error = None
+            if backend is not None:
+                backend_error = backend.status.error
+            print(
+                "[FaceEditors] SAM re-aging backend unavailable"
+                + (f": {backend_error}" if backend_error else ".")
+            )
+            return None
+
+        current_age = float(parameters.get('FaceReagingCurrentAgeSlider', 30))
+        target_age = float(parameters.get('FaceReagingTargetAgeSlider', 45))
+        effective_target = target_age + float(age_shift)
+        effective_target = max(1.0, min(100.0, effective_target))
+        current_age = max(1.0, min(100.0, current_age))
+
+        try:
+            backend_output = backend(normalized, current_age, effective_target)
+        except Exception as runtime_error:  # pragma: no cover - defensive fallback
+            print(f"[FaceEditors] SAM re-aging backend raised an exception: {runtime_error}")
+            return None
+
+        if backend_output is None:
+            backend_error = backend.status.error if backend is not None else None
+            print(
+                "[FaceEditors] SAM re-aging backend returned no result"
+                + (f": {backend_error}" if backend_error else ".")
+            )
+            return None
+
+        backend_output = backend_output.to(device=normalized.device, dtype=normalized.dtype)
+        effect_strength = float(max(0.0, min(1.0, strength)))
+        blended_face = normalized * (1.0 - effect_strength) + backend_output * effect_strength
+
+        blend_mask = torch.clamp(soft_mask * blend, 0, 1)
+        result = normalized * (1 - blend_mask) + blended_face * blend_mask
+        return torch.clamp(result, 0, 1)
         
     def lp_motion_extractor(self, img, face_editor_type='Human-Face', **kwargs) -> dict:
         kp_info = {}
@@ -641,11 +705,12 @@ class FaceEditors:
         return out, combined_mask.unsqueeze(0)
 
     def apply_face_reaging(self, img: torch.Tensor, parameters: dict) -> torch.Tensor:
+        model_choice = parameters.get('FaceReagingModelSelection', 'Face Aging GAN')
         age_shift = parameters['FaceReagingAgeShiftSlider']
         strength = parameters['FaceReagingStrengthDecimalSlider']
         blend = parameters['FaceReagingBlendAmountDecimalSlider']
 
-        if age_shift == 0 or strength <= 0 or blend <= 0:
+        if blend <= 0:
             return img
 
         img_float = img.to(dtype=torch.float32)
@@ -660,6 +725,16 @@ class FaceEditors:
         soft_mask = soft_mask.expand_as(img_float)
 
         normalized = torch.clamp(img_float / 255.0, 0.0, 1.0)
+
+        if model_choice == 'SAM De-Aging':
+            result = self._apply_sam_face_reaging(normalized, soft_mask, parameters, strength, age_shift, blend)
+            if result is not None:
+                return torch.clamp(result * 255.0, 0, 255).type(img.dtype)
+            print("[FaceEditors] Falling back to Face Aging GAN pipeline for re-aging.")
+
+        if age_shift == 0 or strength <= 0:
+            return img
+
         abs_shift = min(abs(age_shift) / 50.0, 1.0)
         if abs_shift == 0:
             return img
