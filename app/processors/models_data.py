@@ -467,5 +467,16 @@ models_list = [
         "hash": "a6164debbf1e851c3dcefa622111c42a78afd9bb8f1540e7d01172ddf642c3b5",
         "url": f"{assets_repo}/v0.1.0_lp/warping_spade-fix.onnx"
 
+    },
+    {
+        "model_name": "SAM Re-Aging UNet",
+        "local_path": f"{models_dir}/face_reaging/best_unet_model.pth",
+        "hash": None,
+        "url": None,
+        "manual_url": "https://github.com/yuval-alaluf/Re-Aging/releases",
+        "manual_note": (
+            "Download the best_unet_model.pth checkpoint from the official Re-Aging "
+            "repository (Yuval Alaluf et al.) and copy it to the path below."
+        ),
     }
 ]
