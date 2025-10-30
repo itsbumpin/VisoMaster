@@ -36,10 +36,19 @@ class _ResidualConv(nn.Module):
     def __init__(self, in_channels: int, out_channels: int, condition_dim: int) -> None:
         super().__init__()
         self.conv1 = nn.Conv2d(in_channels, out_channels, kernel_size=3, padding=1, bias=False)
-        self.norm1 = nn.InstanceNorm2d(out_channels, affine=True, track_running_stats=False)
+        # The official Re-Aging UNet uses batch normalisation layers.  Using
+        # ``InstanceNorm2d`` (which does not register running statistics by
+        # default) caused the checkpoint loader to report dozens of missing
+        # buffers (`running_mean`, `running_var`) and unexpected
+        # ``num_batches_tracked`` entries when the correct
+        # ``best_unet_model.pth`` weights were supplied.  Aligning with the
+        # original architecture ensures the state dict slots match and the
+        # backend can actually run inference instead of falling back to the
+        # GAN implementation.
+        self.norm1 = nn.BatchNorm2d(out_channels, affine=True)
         self.mod1 = _FiLMBlock(out_channels, condition_dim)
         self.conv2 = nn.Conv2d(out_channels, out_channels, kernel_size=3, padding=1, bias=False)
-        self.norm2 = nn.InstanceNorm2d(out_channels, affine=True, track_running_stats=False)
+        self.norm2 = nn.BatchNorm2d(out_channels, affine=True)
         self.mod2 = _FiLMBlock(out_channels, condition_dim)
         self.act = nn.LeakyReLU(0.2, inplace=True)
         self.skip = (
@@ -117,7 +126,7 @@ class ConditionalUNet(nn.Module):
         )
         self.final = nn.Sequential(
             nn.Conv2d(base_channels, base_channels // 2, kernel_size=3, padding=1, bias=False),
-            nn.InstanceNorm2d(base_channels // 2, affine=True, track_running_stats=False),
+            nn.BatchNorm2d(base_channels // 2, affine=True),
             nn.LeakyReLU(0.2, inplace=True),
             nn.Conv2d(base_channels // 2, in_channels, kernel_size=1),
         )
