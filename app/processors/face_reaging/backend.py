@@ -2,6 +2,7 @@ from __future__ import annotations
 
 from dataclasses import dataclass
 from pathlib import Path
+import inspect
 from typing import Dict, Optional, Tuple
 
 import torch
@@ -9,7 +10,15 @@ import torch
 import torch.nn as nn
 import torch.nn.functional as F
 
-from app.processors.models_data import models_dir
+from app.processors.models_data import third_party_dir
+
+
+DEFAULT_SAM_CHECKPOINT = (
+    Path(third_party_dir)
+    / "SAM"
+    / "pretrained"
+    / "sam_ffhq_aging.pt"
+)
 
 
 @dataclass
@@ -161,11 +170,15 @@ def _normalise_state_dict(state_dict: Dict[str, torch.Tensor]) -> Dict[str, torc
 
 
 class FaceReagingBackend:
-    """Wrapper that loads the official face re-aging UNet if available."""
+    """Wrapper that loads the SAM re-aging generator checkpoint if available."""
 
     def __init__(self, device: str | torch.device, model_path: Path | None = None) -> None:
         self.device = torch.device(device) if not isinstance(device, torch.device) else device
-        self.model_path = Path(model_path) if model_path is not None else Path(models_dir) / "face_reaging" / "best_unet_model.pth"
+        self.model_path = (
+            Path(model_path)
+            if model_path is not None
+            else DEFAULT_SAM_CHECKPOINT
+        )
         self.model_path.parent.mkdir(parents=True, exist_ok=True)
         self.model: Optional[nn.Module] = None
         self.status = _BackendStatus(is_ready=False, error=None)
@@ -178,17 +191,17 @@ class FaceReagingBackend:
 
     def _load(self) -> None:
         if not self.model_path.exists():
-            alt_checkpoint = self.model_path.with_name("sam_ffhq_aging.pt")
+            alt_checkpoint = self.model_path.with_name("best_unet_model.pth")
             if alt_checkpoint.exists():
                 error = (
-                    f"Found {alt_checkpoint.name}, but SAM re-aging requires "
-                    f"best_unet_model.pth from the official Re-Aging release."
+                    f"Found {alt_checkpoint.name}, but the SAM backend expects "
+                    f"sam_ffhq_aging.pt from the official SAM release."
                 )
             else:
                 error = (
                     f"Missing checkpoint at {self.model_path}. Download "
-                    f"best_unet_model.pth from the Re-Aging repository and place "
-                    f"it here."
+                    f"sam_ffhq_aging.pt from the SAM repository and place it here "
+                    f"(VisoMaster/third_party/SAM/pretrained/)."
                 )
             self.status = _BackendStatus(
                 is_ready=False,
@@ -242,9 +255,20 @@ class FaceReagingBackend:
             model = ConditionalUNet(in_channels=3, condition_channels=self.condition_channels)
             missing, unexpected = model.load_state_dict(state_dict, strict=False)
             if missing or unexpected:
+                hint = (
+                    "The checkpoint does not match the SAM generator. "
+                    "Download sam_ffhq_aging.pt from the SAM release and place it in "
+                    "third_party/SAM/pretrained/. If you intended to use the Face "
+                    "Re-Aging UNet instead, point the settings override to its "
+                    "best_unet_model.pth file."
+                )
+                error = (
+                    f"Missing keys: {len(missing)}, unexpected: {len(unexpected)}. "
+                    f"{hint}"
+                )
                 self.status = _BackendStatus(
                     is_ready=len(missing) < len(state_dict),
-                    error=f"Missing keys: {len(missing)}, unexpected: {len(unexpected)}",
+                    error=error,
                 )
             else:
                 self.status = _BackendStatus(is_ready=True, error=None)
@@ -282,11 +306,7 @@ class FaceReagingBackend:
                 model_input = batched * 2.0 - 1.0
                 output = self.model(model_input, condition)
             else:
-                condition_map = condition.view(1, self.condition_channels, 1, 1).expand(
-                    batched.size(0), -1, batched.shape[-2], batched.shape[-1]
-                )
-                model_input = torch.cat([batched * 2.0 - 1.0, condition_map], dim=1)
-                output = self.model(model_input)
+                output = self._invoke_external_model(batched, condition, current_age, target_age)
 
             if isinstance(output, (tuple, list)):
                 output = output[0]
@@ -305,3 +325,88 @@ class FaceReagingBackend:
         except Exception as runtime_error:  # pragma: no cover - best effort fallback
             self.status = _BackendStatus(is_ready=False, error=str(runtime_error))
             return None
+
+    def _invoke_external_model(
+        self,
+        batched: torch.Tensor,
+        condition: torch.Tensor,
+        current_age: float,
+        target_age: float,
+    ) -> torch.Tensor:
+        """Attempt to call a third-party SAM module with multiple fallbacks."""
+
+        normalized = batched * 2.0 - 1.0
+        condition_map = condition.view(1, self.condition_channels, 1, 1).expand(
+            batched.size(0), -1, batched.shape[-2], batched.shape[-1]
+        )
+        combined = torch.cat([normalized, condition_map], dim=1)
+
+        age_tensor = torch.tensor(
+            [target_age],
+            dtype=batched.dtype,
+            device=batched.device,
+        )
+        current_tensor = torch.tensor(
+            [current_age],
+            dtype=batched.dtype,
+            device=batched.device,
+        )
+        delta_tensor = torch.tensor(
+            [(target_age - current_age) / 100.0],
+            dtype=batched.dtype,
+            device=batched.device,
+        )
+
+        attempts = [
+            ((normalized,), {}),
+            ((normalized,), {"age": age_tensor}),
+            ((normalized,), {"target_age": age_tensor}),
+            ((normalized,), {"age_target": age_tensor}),
+            ((normalized,), {"alpha": delta_tensor}),
+            ((normalized,), {"age": delta_tensor}),
+            ((normalized,), {"target": delta_tensor}),
+            ((normalized,), {"source_age": current_tensor, "target_age": age_tensor}),
+            ((normalized,), {"input_age": current_tensor, "output_age": age_tensor}),
+            ((normalized,), {"condition": condition}),
+            ((normalized,), {"age_condition": condition}),
+            ((combined,), {}),
+            ((combined,), {"age": age_tensor}),
+            ((combined,), {"alpha": delta_tensor}),
+        ]
+
+        last_error: Optional[Exception] = None
+        forward = self.model.forward if hasattr(self.model, "forward") else self.model
+        signature = None
+        allows_var_kwargs = False
+        try:
+            signature = inspect.signature(forward)
+            allows_var_kwargs = any(
+                parameter.kind is inspect.Parameter.VAR_KEYWORD
+                for parameter in signature.parameters.values()
+            )
+        except (TypeError, ValueError):  # pragma: no cover - dynamic modules may not expose signature
+            signature = None
+
+        for args, kwargs in attempts:
+            attempt_kwargs = dict(kwargs)
+            if signature is not None:
+                bound_kwargs = {}
+                for key, value in attempt_kwargs.items():
+                    if key in signature.parameters:
+                        bound_kwargs[key] = value
+                if bound_kwargs:
+                    attempt_kwargs = bound_kwargs
+                elif not allows_var_kwargs:
+                    attempt_kwargs = {}
+            try:
+                return self.model(*args, **attempt_kwargs)
+            except TypeError as error:
+                last_error = error
+                continue
+            except RuntimeError as error:
+                last_error = error
+                continue
+
+        if last_error is None:
+            last_error = RuntimeError("Unable to execute SAM model with the provided inputs")
+        raise last_error

@@ -1,4 +1,8 @@
+from pathlib import Path
+
+
 models_dir = './model_assets'
+third_party_dir = str(Path(models_dir).parent / 'third_party')
 assets_repo = "https://github.com/visomaster/visomaster-assets/releases/download"
 
 try:
@@ -469,14 +473,21 @@ models_list = [
 
     },
     {
-        "model_name": "SAM Re-Aging UNet",
-        "local_path": f"{models_dir}/face_reaging/best_unet_model.pth",
+        "model_name": "SAM Re-Aging Generator",
+        "local_path": str(
+            Path(third_party_dir)
+            / "SAM"
+            / "pretrained"
+            / "sam_ffhq_aging.pt"
+        ),
         "hash": None,
         "url": None,
-        "manual_url": "https://github.com/yuval-alaluf/Re-Aging/releases",
+        "manual_url": "https://github.com/yuval-alaluf/SAM",
         "manual_note": (
-            "Download the best_unet_model.pth checkpoint from the official Re-Aging "
-            "repository (Yuval Alaluf et al.) and copy it to the path below."
+            "Download the sam_ffhq_aging.pt checkpoint from the SAM release and "
+            "copy it to the path below (VisoMaster/third_party/SAM/pretrained/). "
+            "If you prefer the Face Re-Aging UNet, override the path to point to its "
+            "best_unet_model.pth file instead."
         ),
     }
 ]
