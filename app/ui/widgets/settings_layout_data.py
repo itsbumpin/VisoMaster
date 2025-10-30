@@ -2,7 +2,7 @@ from pathlib import Path
 
 from app.ui.widgets.actions import control_actions
 import cv2
-from app.processors.models_data import models_dir
+from app.processors.models_data import models_dir, third_party_dir
 from app.helpers.typing_helper import LayoutDictTypes
 SETTINGS_LAYOUT_DATA: LayoutDictTypes = {
     'Appearance': {
@@ -183,9 +183,9 @@ SETTINGS_LAYOUT_DATA: LayoutDictTypes = {
             'help': 'Map model identifiers or filenames to custom checkpoint locations when files are stored outside the default model_assets directory.',
             'predefined_models': [
                 {
-                    'key': 'face_reaging_best_unet',
-                    'label': 'SAM Re-Aging best_unet_model.pth',
-                    'default_path': str(Path(models_dir) / 'face_reaging' / 'best_unet_model.pth'),
+                    'key': 'sam_reaging_generator',
+                    'label': 'SAM Re-Aging sam_ffhq_aging.pt',
+                    'default_path': str(Path(third_party_dir) / 'SAM' / 'pretrained' / 'sam_ffhq_aging.pt'),
                 },
             ],
             'dialog_caption': 'Select model checkpoint',

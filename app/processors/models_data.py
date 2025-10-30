@@ -1,4 +1,8 @@
+from pathlib import Path
+
+
 models_dir = './model_assets'
+third_party_dir = str(Path(models_dir).parent / 'third_party')
 assets_repo = "https://github.com/visomaster/visomaster-assets/releases/download"
 
 try:
