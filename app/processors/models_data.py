@@ -476,7 +476,9 @@ models_list = [
         "manual_url": "https://github.com/yuval-alaluf/Re-Aging/releases",
         "manual_note": (
             "Download the best_unet_model.pth checkpoint from the official Re-Aging "
-            "repository (Yuval Alaluf et al.) and copy it to the path below."
+            "repository (Yuval Alaluf et al.) and copy it to the path below. Do not "
+            "use sam_ffhq_aging.pt from the SAM project here—that checkpoint belongs "
+            "with the SAM repository and is not compatible with this backend."
         ),
     }
 ]

@@ -242,9 +242,20 @@ class FaceReagingBackend:
             model = ConditionalUNet(in_channels=3, condition_channels=self.condition_channels)
             missing, unexpected = model.load_state_dict(state_dict, strict=False)
             if missing or unexpected:
+                hint = (
+                    "The checkpoint does not match the official Re-Aging UNet. "
+                    "Download best_unet_model.pth from the Re-Aging release and place it "
+                    "in model_assets/face_reaging/. If you have sam_ffhq_aging.pt from the SAM "
+                    "repository, keep it with the SAM project instead; it cannot be used for "
+                    "this backend."
+                )
+                error = (
+                    f"Missing keys: {len(missing)}, unexpected: {len(unexpected)}. "
+                    f"{hint}"
+                )
                 self.status = _BackendStatus(
                     is_ready=len(missing) < len(state_dict),
-                    error=f"Missing keys: {len(missing)}, unexpected: {len(unexpected)}",
+                    error=error,
                 )
             else:
                 self.status = _BackendStatus(is_ready=True, error=None)
