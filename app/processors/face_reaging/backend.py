@@ -9,7 +9,15 @@ import torch
 import torch.nn as nn
 import torch.nn.functional as F
 
-from app.processors.models_data import models_dir
+from app.processors.models_data import third_party_dir
+
+
+DEFAULT_REAGING_CHECKPOINT = (
+    Path(third_party_dir)
+    / "SAM"
+    / "pretrained"
+    / "sam_ffhq_aging.pt"
+)
 
 
 @dataclass
@@ -161,11 +169,15 @@ def _normalise_state_dict(state_dict: Dict[str, torch.Tensor]) -> Dict[str, torc
 
 
 class FaceReagingBackend:
-    """Wrapper that loads the official face re-aging UNet if available."""
+    """Wrapper that loads the SAM re-aging generator checkpoint if available."""
 
     def __init__(self, device: str | torch.device, model_path: Path | None = None) -> None:
         self.device = torch.device(device) if not isinstance(device, torch.device) else device
-        self.model_path = Path(model_path) if model_path is not None else Path(models_dir) / "face_reaging" / "best_unet_model.pth"
+        self.model_path = (
+            Path(model_path)
+            if model_path is not None
+            else DEFAULT_REAGING_CHECKPOINT
+        )
         self.model_path.parent.mkdir(parents=True, exist_ok=True)
         self.model: Optional[nn.Module] = None
         self.status = _BackendStatus(is_ready=False, error=None)
@@ -178,17 +190,17 @@ class FaceReagingBackend:
 
     def _load(self) -> None:
         if not self.model_path.exists():
-            alt_checkpoint = self.model_path.with_name("sam_ffhq_aging.pt")
+            alt_checkpoint = self.model_path.with_name("best_unet_model.pth")
             if alt_checkpoint.exists():
                 error = (
-                    f"Found {alt_checkpoint.name}, but SAM re-aging requires "
-                    f"best_unet_model.pth from the official Re-Aging release."
+                    f"Found {alt_checkpoint.name}, but SAM re-aging expects "
+                    f"sam_ffhq_aging.pt from the official SAM repository."
                 )
             else:
                 error = (
                     f"Missing checkpoint at {self.model_path}. Download "
-                    f"best_unet_model.pth from the Re-Aging repository and place "
-                    f"it here."
+                    f"sam_ffhq_aging.pt from the SAM repository and place "
+                    f"it here (VisoMaster/third_party/SAM/pretrained/)."
                 )
             self.status = _BackendStatus(
                 is_ready=False,
@@ -242,9 +254,20 @@ class FaceReagingBackend:
             model = ConditionalUNet(in_channels=3, condition_channels=self.condition_channels)
             missing, unexpected = model.load_state_dict(state_dict, strict=False)
             if missing or unexpected:
+                hint = (
+                    "The checkpoint does not match the SAM re-aging generator. "
+                    "Download sam_ffhq_aging.pt from the SAM release and place it "
+                    "in third_party/SAM/pretrained/. If you have best_unet_model.pth "
+                    "from the Re-Aging project, keep it with that backend; it cannot be "
+                    "used for this pipeline."
+                )
+                error = (
+                    f"Missing keys: {len(missing)}, unexpected: {len(unexpected)}. "
+                    f"{hint}"
+                )
                 self.status = _BackendStatus(
                     is_ready=len(missing) < len(state_dict),
-                    error=f"Missing keys: {len(missing)}, unexpected: {len(unexpected)}",
+                    error=error,
                 )
             else:
                 self.status = _BackendStatus(is_ready=True, error=None)
