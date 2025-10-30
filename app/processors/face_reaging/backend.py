@@ -255,11 +255,11 @@ class FaceReagingBackend:
             missing, unexpected = model.load_state_dict(state_dict, strict=False)
             if missing or unexpected:
                 hint = (
-                    "The checkpoint does not match the SAM re-aging generator. "
-                    "Download sam_ffhq_aging.pt from the SAM release and place it "
-                    "in third_party/SAM/pretrained/. If you have best_unet_model.pth "
-                    "from the Re-Aging project, keep it with that backend; it cannot be "
-                    "used for this pipeline."
+                    "The checkpoint does not match the official Re-Aging UNet. "
+                    "Download best_unet_model.pth from the Re-Aging release and place it "
+                    "in model_assets/face_reaging/. If you have sam_ffhq_aging.pt from the SAM "
+                    "repository, keep it with the SAM project instead; it cannot be used for "
+                    "this backend."
                 )
                 error = (
                     f"Missing keys: {len(missing)}, unexpected: {len(unexpected)}. "

@@ -473,17 +473,16 @@ models_list = [
 
     },
     {
-        "model_name": "SAM Re-Aging Generator",
-        "local_path": str(Path(third_party_dir) / "SAM" / "pretrained" / "sam_ffhq_aging.pt"),
+        "model_name": "SAM Re-Aging UNet",
+        "local_path": f"{models_dir}/face_reaging/best_unet_model.pth",
         "hash": None,
         "url": None,
-        "manual_url": "https://github.com/yuval-alaluf/SAM/releases",
+        "manual_url": "https://github.com/yuval-alaluf/Re-Aging/releases",
         "manual_note": (
-            "Download the sam_ffhq_aging.pt checkpoint from the official SAM "
-            "repository (Yuval Alaluf et al.) and copy it to the path below ("
-            "VisoMaster/third_party/SAM/pretrained/). If you have the "
-            "best_unet_model.pth file from the Re-Aging project, keep it with that "
-            "backend—it is not compatible with the SAM generator."
+            "Download the best_unet_model.pth checkpoint from the official Re-Aging "
+            "repository (Yuval Alaluf et al.) and copy it to the path below. Do not "
+            "use sam_ffhq_aging.pt from the SAM project here—that checkpoint belongs "
+            "with the SAM repository and is not compatible with this backend."
         ),
     }
 ]
