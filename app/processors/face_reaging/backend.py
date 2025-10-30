@@ -13,7 +13,7 @@ import torch.nn.functional as F
 from app.processors.models_data import third_party_dir
 
 
-DEFAULT_SAM_CHECKPOINT = (
+DEFAULT_REAGING_CHECKPOINT = (
     Path(third_party_dir)
     / "SAM"
     / "pretrained"
@@ -177,7 +177,7 @@ class FaceReagingBackend:
         self.model_path = (
             Path(model_path)
             if model_path is not None
-            else DEFAULT_SAM_CHECKPOINT
+            else DEFAULT_REAGING_CHECKPOINT
         )
         self.model_path.parent.mkdir(parents=True, exist_ok=True)
         self.model: Optional[nn.Module] = None
@@ -194,14 +194,14 @@ class FaceReagingBackend:
             alt_checkpoint = self.model_path.with_name("best_unet_model.pth")
             if alt_checkpoint.exists():
                 error = (
-                    f"Found {alt_checkpoint.name}, but the SAM backend expects "
-                    f"sam_ffhq_aging.pt from the official SAM release."
+                    f"Found {alt_checkpoint.name}, but SAM re-aging expects "
+                    f"sam_ffhq_aging.pt from the official SAM repository."
                 )
             else:
                 error = (
                     f"Missing checkpoint at {self.model_path}. Download "
-                    f"sam_ffhq_aging.pt from the SAM repository and place it here "
-                    f"(VisoMaster/third_party/SAM/pretrained/)."
+                    f"sam_ffhq_aging.pt from the SAM repository and place "
+                    f"it here (VisoMaster/third_party/SAM/pretrained/)."
                 )
             self.status = _BackendStatus(
                 is_ready=False,
@@ -256,11 +256,11 @@ class FaceReagingBackend:
             missing, unexpected = model.load_state_dict(state_dict, strict=False)
             if missing or unexpected:
                 hint = (
-                    "The checkpoint does not match the SAM generator. "
-                    "Download sam_ffhq_aging.pt from the SAM release and place it in "
-                    "third_party/SAM/pretrained/. If you intended to use the Face "
-                    "Re-Aging UNet instead, point the settings override to its "
-                    "best_unet_model.pth file."
+                    "The checkpoint does not match the official Re-Aging UNet. "
+                    "Download best_unet_model.pth from the Re-Aging release and place it "
+                    "in model_assets/face_reaging/. If you have sam_ffhq_aging.pt from the SAM "
+                    "repository, keep it with the SAM project instead; it cannot be used for "
+                    "this backend."
                 )
                 error = (
                     f"Missing keys: {len(missing)}, unexpected: {len(unexpected)}. "

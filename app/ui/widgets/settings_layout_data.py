@@ -185,12 +185,7 @@ SETTINGS_LAYOUT_DATA: LayoutDictTypes = {
                 {
                     'key': 'sam_reaging_generator',
                     'label': 'SAM Re-Aging sam_ffhq_aging.pt',
-                    'default_path': str(
-                        Path(third_party_dir)
-                        / 'SAM'
-                        / 'pretrained'
-                        / 'sam_ffhq_aging.pt'
-                    ),
+                    'default_path': str(Path(third_party_dir) / 'SAM' / 'pretrained' / 'sam_ffhq_aging.pt'),
                 },
             ],
             'dialog_caption': 'Select model checkpoint',
