@@ -34,6 +34,9 @@ class FaceEditors:
         self._face_reaging_soft_mask_sigma = 6.0
         self._face_reaging_backend: Optional[FaceReagingBackend] = None
 
+    def invalidate_face_reaging_backend(self) -> None:
+        self._face_reaging_backend = None
+
     def load_lip_array(self):
         with open(f'{models_dir}/liveportrait_onnx/lip_array.pkl', 'rb') as f:
             return pickle.load(f)
@@ -89,7 +92,14 @@ class FaceEditors:
     def _get_face_reaging_backend(self) -> Optional[FaceReagingBackend]:
         if self._face_reaging_backend is None:
             try:
-                self._face_reaging_backend = FaceReagingBackend(self.models_processor.device)
+                resolved_model_path = self.models_processor.resolve_model_path(
+                    "sam_reaging_generator",
+                    FaceReagingBackend.default_model_path(),
+                )
+                self._face_reaging_backend = FaceReagingBackend(
+                    self.models_processor.device,
+                    model_path=resolved_model_path,
+                )
                 if not self._face_reaging_backend.is_ready:
                     status_error = self._face_reaging_backend.status.error
                     print(
