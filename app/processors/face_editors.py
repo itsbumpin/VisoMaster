@@ -735,54 +735,7 @@ class FaceEditors:
         normalized = torch.clamp(img_float / 255.0, 0.0, 1.0)
 
         result = self._apply_sam_face_reaging(normalized, soft_mask, parameters, strength, age_shift, blend)
-        if result is not None:
-            return torch.clamp(result * 255.0, 0, 255).type(img.dtype)
-        print(
-            "[FaceEditors] SAM re-aging failed; falling back to the procedural pipeline.",
-            flush=True,
-        )
-
-        if age_shift == 0 or strength <= 0:
+        if result is None:
             return img
-
-        abs_shift = min(abs(age_shift) / 50.0, 1.0)
-        if abs_shift == 0:
-            return img
-
-        kernel = int(max(3, 2 * int(abs(age_shift) // 5) + 3))
-        sigma = max(1.2, abs(age_shift) / 12.0)
-
-        base_blur = self._gaussian_blur(normalized, kernel, sigma)
-        detail = normalized - base_blur
-        detail = torch.clamp(detail, -1.0, 1.0)
-
-        luma = 0.299 * normalized[0] + 0.587 * normalized[1] + 0.114 * normalized[2]
-        luma = luma.unsqueeze(0)
-        shading = self._gaussian_blur(luma, kernel + 2, sigma * 1.5)
-        shading = shading.squeeze(0)
-
-        if age_shift > 0:
-            wrinkle_strength = (0.5 + 0.5 * strength) * abs_shift
-            wrinkle_map = torch.clamp(detail * wrinkle_strength + (shading - luma) * 0.35 * strength, -0.5, 0.5)
-            aged_face = normalized + wrinkle_map
-
-            tone_shift = torch.tensor([0.95, 0.90, 0.85], dtype=torch.float32, device=img_float.device).view(3, 1, 1)
-            tone_mix = strength * abs_shift * 0.18
-            aged_face = aged_face * (1 - tone_mix) + tone_shift * tone_mix
-        else:
-            smooth_strength = (0.45 + 0.55 * strength) * abs_shift
-            smooth_face = normalized * (1 - smooth_strength) + base_blur * smooth_strength
-
-            glow = torch.tensor([1.04, 1.03, 1.01], dtype=torch.float32, device=img_float.device).view(3, 1, 1)
-            highlight = self._gaussian_blur(normalized, kernel + 4, sigma * 1.8)
-            rejuvenated = torch.clamp(smooth_face + (highlight - base_blur) * 0.25 * strength, 0, 1)
-            aged_face = torch.clamp(rejuvenated * glow, 0, 1)
-
-        aged_face = torch.clamp(aged_face, 0, 1)
-
-        blend_mask = torch.clamp(soft_mask * blend, 0, 1)
-        blended = normalized * (1 - blend_mask) + aged_face * blend_mask
-        result = normalized * (1 - soft_mask) + blended * soft_mask
-        result = torch.clamp(result, 0, 1)
 
         return torch.clamp(result * 255.0, 0, 255).type(img.dtype)

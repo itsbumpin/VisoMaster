@@ -3,12 +3,11 @@ from __future__ import annotations
 from dataclasses import dataclass
 from pathlib import Path
 import inspect
-from typing import Dict, Optional, Tuple
+from typing import Optional, Tuple
 
 import torch
 
 import torch.nn as nn
-import torch.nn.functional as F
 
 from app.processors.models_data import models_dir, third_party_dir
 
@@ -21,9 +20,7 @@ def _default_checkpoint_candidates() -> Tuple[Path, ...]:
 
     return (
         third_party_root / "SAM" / "pretrained" / "sam_ffhq_aging.pt",
-        third_party_root / "SAM" / "pretrained" / "best_unet_model.pth",
         models_root / "face_reaging" / "sam_ffhq_aging.pt",
-        models_root / "face_reaging" / "best_unet_model.pth",
     )
 
 
@@ -31,148 +28,6 @@ def _default_checkpoint_candidates() -> Tuple[Path, ...]:
 class _BackendStatus:
     is_ready: bool = False
     error: Optional[str] = None
-
-
-class _FiLMBlock(nn.Module):
-    """Applies feature-wise affine modulation driven by an age embedding."""
-
-    def __init__(self, channels: int, condition_dim: int) -> None:
-        super().__init__()
-        self.gamma = nn.Linear(condition_dim, channels)
-        self.beta = nn.Linear(condition_dim, channels)
-
-    def forward(self, x: torch.Tensor, condition: torch.Tensor) -> torch.Tensor:
-        gamma = self.gamma(condition).unsqueeze(-1).unsqueeze(-1)
-        beta = self.beta(condition).unsqueeze(-1).unsqueeze(-1)
-        return x * (1.0 + gamma) + beta
-
-
-class _ResidualConv(nn.Module):
-    def __init__(self, in_channels: int, out_channels: int, condition_dim: int) -> None:
-        super().__init__()
-        self.conv1 = nn.Conv2d(in_channels, out_channels, kernel_size=3, padding=1, bias=False)
-        # The official Re-Aging UNet uses batch normalisation layers.  Using
-        # ``InstanceNorm2d`` (which does not register running statistics by
-        # default) caused the checkpoint loader to report dozens of missing
-        # buffers (`running_mean`, `running_var`) and unexpected
-        # ``num_batches_tracked`` entries when the correct
-        # ``best_unet_model.pth`` weights were supplied.  Aligning with the
-        # original architecture ensures the state dict slots match and the
-        # backend can actually run inference instead of falling back to the
-        # GAN implementation.
-        self.norm1 = nn.BatchNorm2d(out_channels, affine=True)
-        self.mod1 = _FiLMBlock(out_channels, condition_dim)
-        self.conv2 = nn.Conv2d(out_channels, out_channels, kernel_size=3, padding=1, bias=False)
-        self.norm2 = nn.BatchNorm2d(out_channels, affine=True)
-        self.mod2 = _FiLMBlock(out_channels, condition_dim)
-        self.act = nn.LeakyReLU(0.2, inplace=True)
-        self.skip = (
-            nn.Conv2d(in_channels, out_channels, kernel_size=1, bias=False)
-            if in_channels != out_channels
-            else nn.Identity()
-        )
-
-    def forward(self, x: torch.Tensor, condition: torch.Tensor) -> torch.Tensor:
-        residual = self.skip(x)
-        out = self.conv1(x)
-        out = self.norm1(out)
-        out = self.mod1(out, condition)
-        out = self.act(out)
-        out = self.conv2(out)
-        out = self.norm2(out)
-        out = self.mod2(out, condition)
-        out = self.act(out + residual)
-        return out
-
-
-class _EncoderBlock(nn.Module):
-    def __init__(self, in_channels: int, out_channels: int, condition_dim: int) -> None:
-        super().__init__()
-        self.residual = _ResidualConv(in_channels, out_channels, condition_dim)
-        self.down = nn.Conv2d(out_channels, out_channels, kernel_size=4, stride=2, padding=1, bias=False)
-
-    def forward(self, x: torch.Tensor, condition: torch.Tensor) -> Tuple[torch.Tensor, torch.Tensor]:
-        features = self.residual(x, condition)
-        down = self.down(features)
-        return features, down
-
-
-class _DecoderBlock(nn.Module):
-    def __init__(self, in_channels: int, skip_channels: int, out_channels: int, condition_dim: int) -> None:
-        super().__init__()
-        self.up = nn.ConvTranspose2d(in_channels, out_channels, kernel_size=4, stride=2, padding=1, bias=False)
-        self.residual = _ResidualConv(out_channels + skip_channels, out_channels, condition_dim)
-
-    def forward(self, x: torch.Tensor, skip: torch.Tensor, condition: torch.Tensor) -> torch.Tensor:
-        up = self.up(x)
-        if up.shape[-2:] != skip.shape[-2:]:
-            up = F.interpolate(up, size=skip.shape[-2:], mode="bilinear", align_corners=False)
-        merged = torch.cat([up, skip], dim=1)
-        return self.residual(merged, condition)
-
-
-class ConditionalUNet(nn.Module):
-    """Conditional UNet mirroring the face_reaging generator."""
-
-    def __init__(
-        self,
-        in_channels: int = 3,
-        condition_channels: int = 2,
-        base_channels: int = 64,
-    ) -> None:
-        super().__init__()
-        self.condition_dim = condition_channels
-
-        self.initial = _ResidualConv(in_channels, base_channels, condition_channels)
-        self.encoders = nn.ModuleList(
-            [
-                _EncoderBlock(base_channels, base_channels * 2, condition_channels),
-                _EncoderBlock(base_channels * 2, base_channels * 4, condition_channels),
-                _EncoderBlock(base_channels * 4, base_channels * 8, condition_channels),
-            ]
-        )
-        self.bottleneck = _ResidualConv(base_channels * 8, base_channels * 8, condition_channels)
-        self.decoders = nn.ModuleList(
-            [
-                _DecoderBlock(base_channels * 8, base_channels * 8, base_channels * 4, condition_channels),
-                _DecoderBlock(base_channels * 4, base_channels * 4, base_channels * 2, condition_channels),
-                _DecoderBlock(base_channels * 2, base_channels * 2, base_channels, condition_channels),
-            ]
-        )
-        self.final = nn.Sequential(
-            nn.Conv2d(base_channels, base_channels // 2, kernel_size=3, padding=1, bias=False),
-            nn.BatchNorm2d(base_channels // 2, affine=True),
-            nn.LeakyReLU(0.2, inplace=True),
-            nn.Conv2d(base_channels // 2, in_channels, kernel_size=1),
-        )
-
-    def forward(self, x: torch.Tensor, condition: torch.Tensor) -> torch.Tensor:
-        condition = condition.to(dtype=x.dtype)
-        initial = self.initial(x, condition)
-        skip_connections = [initial]
-        out = initial
-        for encoder in self.encoders:
-            skip, out = encoder(out, condition)
-            skip_connections.append(skip)
-
-        out = self.bottleneck(out, condition)
-        for decoder, skip in zip(self.decoders, reversed(skip_connections[:-1])):
-            out = decoder(out, skip, condition)
-
-        out = self.final(out)
-        return torch.tanh(out)
-
-
-def _normalise_state_dict(state_dict: Dict[str, torch.Tensor]) -> Dict[str, torch.Tensor]:
-    if not state_dict:
-        return state_dict
-
-    sample_key = next(iter(state_dict))
-    if sample_key.startswith("module."):
-        return {key[len("module."):]: value for key, value in state_dict.items()}
-    if sample_key.startswith("model."):
-        return {key[len("model."):]: value for key, value in state_dict.items()}
-    return state_dict
 
 
 class FaceReagingBackend:
@@ -213,9 +68,7 @@ class FaceReagingBackend:
                 "Missing checkpoint for the SAM re-aging backend.\n"
                 "Download `sam_ffhq_aging.pt` from the official SAM repository "
                 "(yuval-alaluf/SAM) and place it in the cloned project under "
-                "`third_party/SAM/pretrained/`, or download `best_unet_model.pth` "
-                "from the Re-Aging releases (yuval-alaluf/Re-Aging) and place it in "
-                "`model_assets/face_reaging/`.\n"
+                "`third_party/SAM/pretrained/`.\n"
                 "The backend searched the following locations:\n"
                 f"{joined_candidates}"
             )
@@ -233,13 +86,10 @@ class FaceReagingBackend:
         except Exception:  # pragma: no cover - fallback path
             pass
 
-        state: Optional[object] = None
         try:
-            state = torch.load(str(self.model_path), map_location="cpu", weights_only=True)
-        except TypeError:
-            state = torch.load(str(self.model_path), map_location="cpu")
+            state = torch.load(str(self.model_path), map_location=self.device)
         except Exception as load_error:
-            self.status = _BackendStatus(is_ready=False, error=f"Unable to read checkpoint: {load_error}")
+            self.status = _BackendStatus(is_ready=False, error=f"Unable to read SAM checkpoint: {load_error}")
             return
 
         if isinstance(state, nn.Module):
@@ -248,53 +98,12 @@ class FaceReagingBackend:
             self.status = _BackendStatus(is_ready=True, error=None)
             return
 
-        if isinstance(state, dict):
-            candidates = [
-                "state_dict",
-                "generator",
-                "ema",
-                "model_state_dict",
-                "netG",
-                "G",
-                "model",
-            ]
-            state_dict = None
-            for candidate in candidates:
-                candidate_value = state.get(candidate) if isinstance(state, dict) else None
-                if isinstance(candidate_value, dict):
-                    state_dict = candidate_value
-                    break
-            if state_dict is None:
-                state_dict = state
-
-            state_dict = _normalise_state_dict(state_dict)
-            model = ConditionalUNet(in_channels=3, condition_channels=self.condition_channels)
-            missing, unexpected = model.load_state_dict(state_dict, strict=False)
-            if missing or unexpected:
-                hint = (
-                    "The checkpoint does not match the official Re-Aging UNet. "
-                    "Download best_unet_model.pth from the Re-Aging release and place it "
-                    "in model_assets/face_reaging/. If you have sam_ffhq_aging.pt from the SAM "
-                    "repository, keep it with the SAM project instead; it cannot be used for "
-                    "this backend."
-                )
-                error = (
-                    f"Missing keys: {len(missing)}, unexpected: {len(unexpected)}. "
-                    f"{hint}"
-                )
-                self.status = _BackendStatus(
-                    is_ready=len(missing) < len(state_dict),
-                    error=error,
-                )
-            else:
-                self.status = _BackendStatus(is_ready=True, error=None)
-            self.model = model.to(self.device)
-            self.model.eval()
-            return
-
         self.status = _BackendStatus(
             is_ready=False,
-            error=f"Checkpoint format not recognised ({type(state).__name__})",
+            error=(
+                "Unsupported checkpoint format. The face re-aging backend only supports "
+                "TorchScript modules or pickled nn.Module checkpoints exported by SAM."
+            ),
         )
 
     def __call__(
@@ -318,23 +127,16 @@ class FaceReagingBackend:
                 device=batched.device,
             ).view(1, self.condition_channels)
 
-            if isinstance(self.model, ConditionalUNet):
-                model_input = batched * 2.0 - 1.0
-                output = self.model(model_input, condition)
-            else:
-                output = self._invoke_external_model(batched, condition, current_age, target_age)
+            output = self._invoke_external_model(batched, condition, current_age, target_age)
 
             if isinstance(output, (tuple, list)):
                 output = output[0]
             if output.dim() == 4:
                 output = output[0]
 
-            if isinstance(self.model, ConditionalUNet):
-                scaled = torch.clamp(output, -1.0, 1.0)
-            else:
-                if not output.dtype.is_floating_point:
-                    output = output.to(torch.float32)
-                scaled = torch.tanh(output)
+            if not output.dtype.is_floating_point:
+                output = output.to(torch.float32)
+            scaled = torch.tanh(output)
 
             result = (scaled + 1.0) * 0.5
             return torch.clamp(result, 0.0, 1.0)
