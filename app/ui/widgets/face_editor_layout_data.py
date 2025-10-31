@@ -459,15 +459,6 @@ FACE_EDITOR_LAYOUT_DATA: LayoutDictTypes = {
             'default': False,
             'help': 'Enable the face re-aging filter to adjust the perceived age of the face.'
         },
-        'FaceReagingModelSelection': {
-            'level': 1,
-            'label': 'Re-Aging Model',
-            'options': ['Face Aging GAN', 'SAM De-Aging'],
-            'default': 'Face Aging GAN',
-            'parentToggle': 'FaceReagingEnableToggle',
-            'requiredToggleValue': True,
-            'help': 'Choose which backend to use. SAM prioritises de-aging while the GAN handles age increases.'
-        },
         'FaceReagingCurrentAgeSlider': {
             'level': 2,
             'label': 'Current Age',
