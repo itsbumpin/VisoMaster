@@ -714,7 +714,6 @@ class FaceEditors:
         return out, combined_mask.unsqueeze(0)
 
     def apply_face_reaging(self, img: torch.Tensor, parameters: dict) -> torch.Tensor:
-        model_choice = parameters.get('FaceReagingModelSelection', 'Face Aging GAN')
         age_shift = parameters['FaceReagingAgeShiftSlider']
         strength = parameters['FaceReagingStrengthDecimalSlider']
         blend = parameters['FaceReagingBlendAmountDecimalSlider']
@@ -735,14 +734,13 @@ class FaceEditors:
 
         normalized = torch.clamp(img_float / 255.0, 0.0, 1.0)
 
-        if model_choice == 'SAM De-Aging':
-            result = self._apply_sam_face_reaging(normalized, soft_mask, parameters, strength, age_shift, blend)
-            if result is not None:
-                return torch.clamp(result * 255.0, 0, 255).type(img.dtype)
-            print(
-                "[FaceEditors] Falling back to Face Aging GAN pipeline for re-aging.",
-                flush=True,
-            )
+        result = self._apply_sam_face_reaging(normalized, soft_mask, parameters, strength, age_shift, blend)
+        if result is not None:
+            return torch.clamp(result * 255.0, 0, 255).type(img.dtype)
+        print(
+            "[FaceEditors] SAM re-aging failed; falling back to the procedural pipeline.",
+            flush=True,
+        )
 
         if age_shift == 0 or strength <= 0:
             return img

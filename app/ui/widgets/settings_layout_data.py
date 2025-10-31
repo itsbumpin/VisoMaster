@@ -185,11 +185,10 @@ SETTINGS_LAYOUT_DATA: LayoutDictTypes = {
                 {
                     'key': 'sam_reaging_generator',
                     'label': 'SAM Re-Aging Checkpoint',
-                    'default_path': str(Path(models_dir) / 'face_reaging' / 'best_unet_model.pth'),
+                    'default_path': str(Path(models_dir).parent / 'third_party' / 'SAM' / 'pretrained' / 'sam_ffhq_aging.pt'),
                     'help': (
-                        'Place `sam_ffhq_aging.pt` inside third_party/SAM/pretrained/ when cloning the '
-                        'official SAM repository, or use `best_unet_model.pth` from the Re-Aging release '
-                        'inside model_assets/face_reaging/.'
+                        'Clone the official SAM repository (yuval-alaluf/SAM) into third_party/SAM and '
+                        'download the `sam_ffhq_aging.pt` checkpoint into the pretrained/ folder.'
                     ),
                 },
             ],
