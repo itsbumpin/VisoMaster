@@ -10,15 +10,21 @@ import torch
 import torch.nn as nn
 import torch.nn.functional as F
 
-from app.processors.models_data import third_party_dir
+from app.processors.models_data import models_dir, third_party_dir
 
 
-DEFAULT_REAGING_CHECKPOINT = (
-    Path(third_party_dir)
-    / "SAM"
-    / "pretrained"
-    / "sam_ffhq_aging.pt"
-)
+def _default_checkpoint_candidates() -> Tuple[Path, ...]:
+    """Return preferred checkpoint locations in priority order."""
+
+    third_party_root = Path(third_party_dir)
+    models_root = Path(models_dir)
+
+    return (
+        third_party_root / "SAM" / "pretrained" / "sam_ffhq_aging.pt",
+        third_party_root / "SAM" / "pretrained" / "best_unet_model.pth",
+        models_root / "face_reaging" / "sam_ffhq_aging.pt",
+        models_root / "face_reaging" / "best_unet_model.pth",
+    )
 
 
 @dataclass
@@ -174,12 +180,9 @@ class FaceReagingBackend:
 
     def __init__(self, device: str | torch.device, model_path: Path | None = None) -> None:
         self.device = torch.device(device) if not isinstance(device, torch.device) else device
-        self.model_path = (
-            Path(model_path)
-            if model_path is not None
-            else DEFAULT_REAGING_CHECKPOINT
-        )
-        self.model_path.parent.mkdir(parents=True, exist_ok=True)
+        self.model_path, self._searched_paths = self._resolve_model_path(model_path)
+        for candidate in self._searched_paths:
+            candidate.parent.mkdir(parents=True, exist_ok=True)
         self.model: Optional[nn.Module] = None
         self.status = _BackendStatus(is_ready=False, error=None)
         self.condition_channels = 2
@@ -189,20 +192,33 @@ class FaceReagingBackend:
     def is_ready(self) -> bool:
         return self.status.is_ready and self.model is not None
 
+    def _resolve_model_path(
+        self, override: Path | None
+    ) -> Tuple[Path, Tuple[Path, ...]]:
+        if override is not None:
+            path = Path(override)
+            return path, (path,)
+
+        candidates = _default_checkpoint_candidates()
+        for candidate in candidates:
+            if candidate.exists():
+                return candidate, candidates
+
+        return candidates[0], candidates
+
     def _load(self) -> None:
         if not self.model_path.exists():
-            alt_checkpoint = self.model_path.with_name("best_unet_model.pth")
-            if alt_checkpoint.exists():
-                error = (
-                    f"Found {alt_checkpoint.name}, but SAM re-aging expects "
-                    f"sam_ffhq_aging.pt from the official SAM repository."
-                )
-            else:
-                error = (
-                    f"Missing checkpoint at {self.model_path}. Download "
-                    f"sam_ffhq_aging.pt from the SAM repository and place "
-                    f"it here (VisoMaster/third_party/SAM/pretrained/)."
-                )
+            joined_candidates = "\n".join(f"- {path}" for path in self._searched_paths)
+            error = (
+                "Missing checkpoint for the SAM re-aging backend.\n"
+                "Download `sam_ffhq_aging.pt` from the official SAM repository "
+                "(yuval-alaluf/SAM) and place it in the cloned project under "
+                "`third_party/SAM/pretrained/`, or download `best_unet_model.pth` "
+                "from the Re-Aging releases (yuval-alaluf/Re-Aging) and place it in "
+                "`model_assets/face_reaging/`.\n"
+                "The backend searched the following locations:\n"
+                f"{joined_candidates}"
+            )
             self.status = _BackendStatus(
                 is_ready=False,
                 error=error,
