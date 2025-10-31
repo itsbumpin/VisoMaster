@@ -473,16 +473,14 @@ models_list = [
 
     },
     {
-        "model_name": "SAM Re-Aging UNet",
-        "local_path": f"{models_dir}/face_reaging/best_unet_model.pth",
+        "model_name": "SAM FFHQ Aging",
+        "local_path": f"{third_party_dir}/SAM/pretrained/sam_ffhq_aging.pt",
         "hash": None,
         "url": None,
-        "manual_url": "https://github.com/yuval-alaluf/Re-Aging/releases",
+        "manual_url": "https://github.com/yuval-alaluf/SAM",
         "manual_note": (
-            "Download the best_unet_model.pth checkpoint from the official Re-Aging "
-            "repository (Yuval Alaluf et al.) and copy it to the path below. Do not "
-            "use sam_ffhq_aging.pt from the SAM project here—that checkpoint belongs "
-            "with the SAM repository and is not compatible with this backend."
+            "Clone the official SAM repository into third_party/SAM and download the "
+            "sam_ffhq_aging.pt checkpoint into the pretrained/ directory."
         ),
     }
 ]
