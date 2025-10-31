@@ -88,10 +88,11 @@ python download_models.py
 ```
 2. Download all the files from this [page](https://github.com/visomaster/visomaster-assets/releases/tag/v0.1.0_dp) and copy it to the ***dependencies/*** folder.
 
-3. Download the SAM Re-Aging checkpoint manually:
-   - Visit the [official Re-Aging repository releases](https://github.com/yuval-alaluf/Re-Aging/releases) and download `best_unet_model.pth`.
-   - Create the folder `model_assets/face_reaging/` if it doesn't exist and place the file there.
-   - **Do not** place `sam_ffhq_aging.pt` from the [SAM project](https://github.com/yuval-alaluf/SAM) here—SAM keeps its own checkpoint alongside that project. Only the `best_unet_model.pth` file is valid for the SAM Re-Aging backend.
+3. Acquire the SAM Re-Aging checkpoint (choose one of the following options):
+   - **Clone the official SAM repository** ([yuval-alaluf/SAM](https://github.com/yuval-alaluf/SAM)) into `third_party/SAM` and ensure `pretrained/sam_ffhq_aging.pt` is present. The application will automatically detect this checkpoint.
+   - **Download the standalone Re-Aging checkpoint** from the [Re-Aging releases](https://github.com/yuval-alaluf/Re-Aging/releases) and copy `best_unet_model.pth` to `model_assets/face_reaging/` (create the folder if it does not exist).
+   
+   The SAM backend checks both locations on startup and uses whichever valid checkpoint it finds first.
 
   **Note**: You do not need to download the Source code (zip) and Source code (tar.gz) files
 ### **6. Run the Application**  

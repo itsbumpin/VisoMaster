@@ -2,7 +2,7 @@ from pathlib import Path
 
 from app.ui.widgets.actions import control_actions
 import cv2
-from app.processors.models_data import models_dir, third_party_dir
+from app.processors.models_data import models_dir
 from app.helpers.typing_helper import LayoutDictTypes
 SETTINGS_LAYOUT_DATA: LayoutDictTypes = {
     'Appearance': {
@@ -184,8 +184,13 @@ SETTINGS_LAYOUT_DATA: LayoutDictTypes = {
             'predefined_models': [
                 {
                     'key': 'sam_reaging_generator',
-                    'label': 'SAM Re-Aging sam_ffhq_aging.pt',
-                    'default_path': str(Path(third_party_dir) / 'SAM' / 'pretrained' / 'sam_ffhq_aging.pt'),
+                    'label': 'SAM Re-Aging Checkpoint',
+                    'default_path': str(Path(models_dir) / 'face_reaging' / 'best_unet_model.pth'),
+                    'help': (
+                        'Place `sam_ffhq_aging.pt` inside third_party/SAM/pretrained/ when cloning the '
+                        'official SAM repository, or use `best_unet_model.pth` from the Re-Aging release '
+                        'inside model_assets/face_reaging/.'
+                    ),
                 },
             ],
             'dialog_caption': 'Select model checkpoint',
