@@ -172,6 +172,10 @@ def _normalise_state_dict(state_dict: Dict[str, torch.Tensor]) -> Dict[str, torc
 class FaceReagingBackend:
     """Wrapper that loads the SAM re-aging generator checkpoint if available."""
 
+    @staticmethod
+    def default_model_path() -> Path:
+        return DEFAULT_REAGING_CHECKPOINT
+
     def __init__(self, device: str | torch.device, model_path: Path | None = None) -> None:
         self.device = torch.device(device) if not isinstance(device, torch.device) else device
         self.model_path = (
