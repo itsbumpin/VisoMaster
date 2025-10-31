@@ -355,7 +355,26 @@ class FaceReagingBackend:
         condition_map = condition.view(1, self.condition_channels, 1, 1).expand(
             batched.size(0), -1, batched.shape[-2], batched.shape[-1]
         )
+        # The original SAM TorchScript module consumes a remarkably flexible
+        # assortment of inputs depending on the revision that produced the
+        # checkpoint.  Some versions expect the normalised RGB image only,
+        # others require the age conditioning vector and a pre-expanded
+        # conditioning map that matches the internal 256-channel FiLM blocks.
+        #
+        # To cover the common variants we eagerly materialise a number of
+        # tensors that can be mixed-and-matched when probing the model's
+        # signature.  These are cheap to create compared to the cost of the
+        # failed forward calls that would otherwise bubble up as backend
+        # initialisation errors.
         combined = torch.cat([normalized, condition_map], dim=1)
+        repeated_condition_256 = condition.repeat_interleave(128, dim=1)
+        condition_map_256 = repeated_condition_256.view(1, -1, 1, 1).expand(
+            batched.size(0), -1, batched.shape[-2], batched.shape[-1]
+        )
+        repeated_condition_512 = condition.repeat_interleave(256, dim=1)
+        condition_map_512 = repeated_condition_512.view(1, -1, 1, 1).expand(
+            batched.size(0), -1, batched.shape[-2], batched.shape[-1]
+        )
 
         age_tensor = torch.tensor(
             [target_age],
@@ -385,9 +404,28 @@ class FaceReagingBackend:
             ((normalized,), {"input_age": current_tensor, "output_age": age_tensor}),
             ((normalized,), {"condition": condition}),
             ((normalized,), {"age_condition": condition}),
+            ((normalized,), {"age_condition": condition_map}),
+            ((normalized,), {"age_condition": condition_map_256}),
+            ((normalized,), {"age_condition": condition_map_512}),
+            ((normalized,), {"condition_map": condition_map}),
+            ((normalized,), {"condition_map": condition_map_256}),
+            ((normalized,), {"condition_map": condition_map_512}),
+            ((normalized, condition), {}),
+            ((normalized, condition_map), {}),
+            ((normalized, condition_map_256), {}),
+            ((normalized, condition_map_512), {}),
+            ((normalized, condition, age_tensor), {}),
+            ((normalized, condition_map, age_tensor), {}),
+            ((normalized, condition_map_256, age_tensor), {}),
+            ((normalized, condition_map_512, age_tensor), {}),
+            ((normalized, current_tensor, age_tensor), {}),
+            ((normalized, current_tensor, age_tensor, delta_tensor), {}),
             ((combined,), {}),
             ((combined,), {"age": age_tensor}),
             ((combined,), {"alpha": delta_tensor}),
+            ((combined,), {"age_condition": condition}),
+            ((combined,), {"age_condition": condition_map_256}),
+            ((combined,), {"age_condition": condition_map_512}),
         ]
 
         last_error: Optional[Exception] = None
