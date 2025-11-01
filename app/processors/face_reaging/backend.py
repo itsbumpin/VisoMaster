@@ -130,6 +130,8 @@ class FaceReagingBackend:
                 "model_state_dict",
                 "generator",
                 "ema",
+                "model",
+                "g",
             )
             opts_keys = ("opts", "opt", "options")
 
