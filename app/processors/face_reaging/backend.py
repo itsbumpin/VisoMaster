@@ -3,6 +3,9 @@ from __future__ import annotations
 from dataclasses import dataclass
 from pathlib import Path
 import inspect
+import sys
+from collections.abc import Mapping
+from types import SimpleNamespace
 from typing import Optional, Tuple
 
 import torch
@@ -92,19 +95,206 @@ class FaceReagingBackend:
             self.status = _BackendStatus(is_ready=False, error=f"Unable to read SAM checkpoint: {load_error}")
             return
 
-        if isinstance(state, nn.Module):
-            self.model = state.to(self.device)
-            self.model.eval()
-            self.status = _BackendStatus(is_ready=True, error=None)
+        if self._materialise_model_from_checkpoint(state):
             return
 
         self.status = _BackendStatus(
             is_ready=False,
             error=(
-                "Unsupported checkpoint format. The face re-aging backend only supports "
-                "TorchScript modules or pickled nn.Module checkpoints exported by SAM."
+                "Unsupported checkpoint format. The SAM re-aging checkpoint must be a TorchScript "
+                "module, a pickled nn.Module, or a dictionary that includes the model weights "
+                "and options produced by the official SAM repository."
             ),
         )
+
+    def _materialise_model_from_checkpoint(self, checkpoint: object) -> bool:
+        """Attempt to build a runnable module from various SAM checkpoint layouts."""
+
+        if isinstance(checkpoint, nn.Module):
+            self.model = checkpoint.to(self.device)
+            self.model.eval()
+            self.status = _BackendStatus(is_ready=True, error=None)
+            return True
+
+        if isinstance(checkpoint, dict):
+            module = self._extract_module_from_mapping(checkpoint)
+            if module is not None:
+                self.model = module.to(self.device)
+                self.model.eval()
+                self.status = _BackendStatus(is_ready=True, error=None)
+                return True
+
+            state_dict, opts = self._extract_state_dict_payload(checkpoint)
+            if state_dict is not None and opts is not None:
+                module = self._load_psp_from_state_dict(state_dict, opts)
+                if module is not None:
+                    self.model = module
+                    self.model.eval()
+                    self.status = _BackendStatus(is_ready=True, error=None)
+                    return True
+
+        return False
+
+    def _extract_module_from_mapping(self, mapping: Mapping) -> Optional[nn.Module]:
+        visited: set[int] = set()
+        stack: list[Mapping] = [mapping]
+
+        while stack:
+            current = stack.pop()
+            marker = id(current)
+            if marker in visited:
+                continue
+            visited.add(marker)
+
+            for value in current.values():
+                if isinstance(value, nn.Module):
+                    return value
+                if isinstance(value, Mapping) and not self._looks_like_state_dict(value):
+                    stack.append(value)
+
+        return None
+
+    def _extract_state_dict_payload(
+        self, mapping: Mapping
+    ) -> Tuple[Optional[Mapping], Optional[object]]:
+        state_dict_keys = (
+            "state_dict",
+            "model_state_dict",
+            "generator",
+            "ema",
+            "weights",
+        )
+        opts_keys = (
+            "opts",
+            "opt",
+            "options",
+            "hparams",
+            "config",
+        )
+
+        visited: set[int] = set()
+        stack: list[Mapping] = [mapping]
+        found_state_dict: Optional[Mapping] = None
+        found_opts: Optional[object] = None
+
+        while stack:
+            current = stack.pop()
+            marker = id(current)
+            if marker in visited:
+                continue
+            visited.add(marker)
+
+            if found_state_dict is None:
+                for key in state_dict_keys:
+                    candidate = current.get(key)
+                    if isinstance(candidate, Mapping) and self._looks_like_state_dict(candidate):
+                        found_state_dict = candidate
+                        break
+
+            if found_opts is None:
+                for key in opts_keys:
+                    if key in current:
+                        candidate = current[key]
+                        if candidate is not None:
+                            found_opts = candidate
+                            break
+
+            if found_state_dict is not None and found_opts is not None:
+                break
+
+            for value in current.values():
+                if isinstance(value, Mapping):
+                    stack.append(value)
+
+        return found_state_dict, found_opts
+
+    def _looks_like_state_dict(self, candidate: Mapping) -> bool:
+        if not candidate:
+            return False
+        tensor_like = 0
+        for value in candidate.values():
+            if torch.is_tensor(value):
+                tensor_like += 1
+            elif isinstance(value, Mapping):
+                return False
+        return tensor_like > 0
+
+    def _find_sam_repo_root(self) -> Optional[Path]:
+        for parent in self.model_path.parent.parents:
+            models_dir_candidate = parent / "models"
+            configs_dir_candidate = parent / "configs"
+            if models_dir_candidate.exists() and configs_dir_candidate.exists():
+                return parent
+        return None
+
+    def _load_psp_from_state_dict(
+        self,
+        state_dict: dict,
+        opts: object,
+    ) -> Optional[nn.Module]:
+        repo_root = self._find_sam_repo_root()
+        if repo_root is None:
+            self.status = _BackendStatus(
+                is_ready=False,
+                error=(
+                    "The SAM checkpoint includes a state_dict but the SAM repository was not found. "
+                    "Clone yuval-alaluf/SAM into third_party/SAM so the backend can rebuild the model."
+                ),
+            )
+            return None
+
+        sys_path_added = False
+        repo_path = str(repo_root)
+        if repo_path not in sys.path:
+            sys.path.insert(0, repo_path)
+            sys_path_added = True
+
+        try:
+            from models.psp import pSp  # type: ignore
+        except Exception as import_error:
+            if sys_path_added:
+                try:
+                    sys.path.remove(repo_path)
+                except ValueError:
+                    pass
+            self.status = _BackendStatus(
+                is_ready=False,
+                error=(
+                    "Unable to import SAM's pSp model definition from the cloned repository: "
+                    f"{import_error}"
+                ),
+            )
+            return None
+
+        try:
+            opts_dict = self._normalise_opts(opts)
+            opts_dict.setdefault("checkpoint_path", str(self.model_path))
+            namespace = SimpleNamespace(**opts_dict)
+            module = pSp(namespace)  # type: ignore[call-arg]
+            module.load_state_dict(state_dict, strict=False)
+            module = module.to(self.device)
+            return module
+        except Exception as build_error:
+            self.status = _BackendStatus(
+                is_ready=False,
+                error=f"Failed to reconstruct SAM model from checkpoint: {build_error}",
+            )
+            return None
+        finally:
+            if sys_path_added:
+                try:
+                    sys.path.remove(repo_path)
+                except ValueError:
+                    pass
+
+    def _normalise_opts(self, opts: object) -> dict:
+        if isinstance(opts, dict):
+            return dict(opts)
+        if isinstance(opts, SimpleNamespace):
+            return vars(opts)
+        if hasattr(opts, "__dict__"):
+            return dict(vars(opts))
+        raise TypeError("Unsupported opts object in SAM checkpoint")
 
     def __call__(
         self,
