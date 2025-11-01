@@ -4,7 +4,6 @@ from dataclasses import dataclass
 from pathlib import Path
 import inspect
 import sys
-from collections.abc import Mapping
 from types import SimpleNamespace
 from typing import Optional, Tuple
 
@@ -117,14 +116,37 @@ class FaceReagingBackend:
             return True
 
         if isinstance(checkpoint, dict):
-            module = self._extract_module_from_mapping(checkpoint)
-            if module is not None:
-                self.model = module.to(self.device)
-                self.model.eval()
-                self.status = _BackendStatus(is_ready=True, error=None)
-                return True
+            module_keys = ("model", "module", "generator", "sam", "net")
+            for key in module_keys:
+                candidate = checkpoint.get(key)
+                if isinstance(candidate, nn.Module):
+                    self.model = candidate.to(self.device)
+                    self.model.eval()
+                    self.status = _BackendStatus(is_ready=True, error=None)
+                    return True
 
-            state_dict, opts = self._extract_state_dict_payload(checkpoint)
+            state_dict_keys = (
+                "state_dict",
+                "model_state_dict",
+                "generator",
+                "ema",
+            )
+            opts_keys = ("opts", "opt", "options")
+
+            state_dict = None
+            for key in state_dict_keys:
+                value = checkpoint.get(key)
+                if isinstance(value, dict):
+                    state_dict = value
+                    break
+
+            opts = None
+            for key in opts_keys:
+                value = checkpoint.get(key)
+                if value is not None:
+                    opts = value
+                    break
+
             if state_dict is not None and opts is not None:
                 module = self._load_psp_from_state_dict(state_dict, opts)
                 if module is not None:
@@ -134,90 +156,6 @@ class FaceReagingBackend:
                     return True
 
         return False
-
-    def _extract_module_from_mapping(self, mapping: Mapping) -> Optional[nn.Module]:
-        visited: set[int] = set()
-        stack: list[Mapping] = [mapping]
-
-        while stack:
-            current = stack.pop()
-            marker = id(current)
-            if marker in visited:
-                continue
-            visited.add(marker)
-
-            for value in current.values():
-                if isinstance(value, nn.Module):
-                    return value
-                if isinstance(value, Mapping) and not self._looks_like_state_dict(value):
-                    stack.append(value)
-
-        return None
-
-    def _extract_state_dict_payload(
-        self, mapping: Mapping
-    ) -> Tuple[Optional[Mapping], Optional[object]]:
-        state_dict_keys = (
-            "state_dict",
-            "model_state_dict",
-            "generator",
-            "ema",
-            "weights",
-        )
-        opts_keys = (
-            "opts",
-            "opt",
-            "options",
-            "hparams",
-            "config",
-        )
-
-        visited: set[int] = set()
-        stack: list[Mapping] = [mapping]
-        found_state_dict: Optional[Mapping] = None
-        found_opts: Optional[object] = None
-
-        while stack:
-            current = stack.pop()
-            marker = id(current)
-            if marker in visited:
-                continue
-            visited.add(marker)
-
-            if found_state_dict is None:
-                for key in state_dict_keys:
-                    candidate = current.get(key)
-                    if isinstance(candidate, Mapping) and self._looks_like_state_dict(candidate):
-                        found_state_dict = candidate
-                        break
-
-            if found_opts is None:
-                for key in opts_keys:
-                    if key in current:
-                        candidate = current[key]
-                        if candidate is not None:
-                            found_opts = candidate
-                            break
-
-            if found_state_dict is not None and found_opts is not None:
-                break
-
-            for value in current.values():
-                if isinstance(value, Mapping):
-                    stack.append(value)
-
-        return found_state_dict, found_opts
-
-    def _looks_like_state_dict(self, candidate: Mapping) -> bool:
-        if not candidate:
-            return False
-        tensor_like = 0
-        for value in candidate.values():
-            if torch.is_tensor(value):
-                tensor_like += 1
-            elif isinstance(value, Mapping):
-                return False
-        return tensor_like > 0
 
     def _find_sam_repo_root(self) -> Optional[Path]:
         for parent in self.model_path.parent.parents:
