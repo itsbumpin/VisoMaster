@@ -65,6 +65,32 @@ def test_materialise_model_handles_model_state_dict():
     assert backend.is_ready
 
 
+def test_materialise_model_handles_state_dict_without_opts():
+    backend = FaceReagingBackend.__new__(FaceReagingBackend)
+    backend.device = "cpu"
+    backend.model = None
+    backend.status = _BackendStatus()
+
+    calls = {}
+
+    def _fake_loader(state_dict, opts):
+        calls["state_dict"] = state_dict
+        calls["opts"] = opts
+        return dummy_nn.Identity()
+
+    backend._load_psp_from_state_dict = _fake_loader
+
+    checkpoint = {"state_dict": OrderedDict()}
+
+    assert backend._materialise_model_from_checkpoint(checkpoint) is True
+    assert isinstance(backend.model, dummy_nn.Identity)
+    assert backend.status.is_ready
+    assert backend.status.error is None
+    assert backend.is_ready
+    assert calls["state_dict"] == OrderedDict()
+    assert calls["opts"] == {}
+
+
 def test_load_psp_from_state_dict_uses_bundled_module(tmp_path):
     backend = FaceReagingBackend.__new__(FaceReagingBackend)
     backend.device = "cpu"

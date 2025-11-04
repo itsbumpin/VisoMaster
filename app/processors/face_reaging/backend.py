@@ -148,8 +148,8 @@ class FaceReagingBackend:
                     opts = value
                     break
 
-            if state_dict is not None and opts is not None:
-                module = self._load_psp_from_state_dict(state_dict, opts)
+            if state_dict is not None:
+                module = self._load_psp_from_state_dict(state_dict, {} if opts is None else opts)
                 if module is not None:
                     self.model = module
                     self.model.eval()
@@ -178,6 +178,8 @@ class FaceReagingBackend:
             return None
 
     def _normalise_opts(self, opts: object) -> dict:
+        if opts is None:
+            return {}
         if isinstance(opts, dict):
             return dict(opts)
         if isinstance(opts, SimpleNamespace):
