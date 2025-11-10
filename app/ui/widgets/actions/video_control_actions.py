@@ -155,6 +155,7 @@ def move_slider_to_nearest_marker(main_window: 'MainWindow', direction: str):
 
     if new_position is not None:
         main_window.videoSeekSlider.setValue(new_position)
+        main_window.video_processor.sync_audio_to_frame(new_position)
         main_window.video_processor.process_current_frame()
 
 # Wrappers for specific directions
@@ -180,6 +181,7 @@ def advance_video_slider_by_n_frames(main_window: 'MainWindow', n=30):
         if new_position > video_processor.max_frame_number:
             new_position = video_processor.max_frame_number
         main_window.videoSeekSlider.setValue(new_position)
+        video_processor.sync_audio_to_frame(new_position)
         main_window.video_processor.process_current_frame()
 
 def rewind_video_slider_by_n_frames(main_window: 'MainWindow', n=30):
@@ -190,6 +192,7 @@ def rewind_video_slider_by_n_frames(main_window: 'MainWindow', n=30):
         if new_position < 0:
             new_position = 0
         main_window.videoSeekSlider.setValue(new_position)
+        video_processor.sync_audio_to_frame(new_position)
         main_window.video_processor.process_current_frame()
 
 def delete_all_markers(main_window: 'MainWindow'):
@@ -368,7 +371,53 @@ def set_play_button_icon_to_stop(main_window: 'MainWindow'):
     main_window.buttonMediaPlay.setIcon(QtGui.QIcon(":/media/media/play_on.png"))
     main_window.buttonMediaPlay.setToolTip("Stop")
 
-def reset_media_buttons(main_window: 'MainWindow'):
+def set_audio_button_icon(main_window: 'MainWindow'):
+    button = main_window.buttonMediaAudio
+    if button.isChecked():
+        button.setIcon(QtGui.QIcon(":/media/media/audio_on.png"))
+    else:
+        button.setIcon(QtGui.QIcon(":/media/media/audio_off.png"))
+
+    if not button.isEnabled():
+        button.setToolTip("Audio track not available")
+    elif button.isChecked():
+        button.setToolTip("Disable Audio")
+    else:
+        button.setToolTip("Enable Audio")
+
+
+def reset_audio_button(main_window: 'MainWindow', enabled: bool = False):
+    button = main_window.buttonMediaAudio
+    button.blockSignals(True)
+    button.setChecked(False)
+    button.blockSignals(False)
+    button.setEnabled(enabled)
+    main_window.video_processor.enable_audio(False)
+    set_audio_button_icon(main_window)
+
+
+def update_audio_button_for_media(main_window: 'MainWindow', has_audio: bool):
+    button = main_window.buttonMediaAudio
+    button.blockSignals(True)
+    if button.isChecked():
+        button.setChecked(False)
+    button.blockSignals(False)
+    button.setEnabled(has_audio)
+    main_window.video_processor.enable_audio(False)
+    set_audio_button_icon(main_window)
+
+
+def toggle_audio(main_window: 'MainWindow', checked: bool):
+    video_processor = main_window.video_processor
+    final_state = video_processor.enable_audio(checked)
+    if final_state != checked:
+        main_window.buttonMediaAudio.blockSignals(True)
+        main_window.buttonMediaAudio.setChecked(final_state)
+        main_window.buttonMediaAudio.blockSignals(False)
+    set_audio_button_icon(main_window)
+
+
+def reset_media_buttons(main_window: 'MainWindow', reset_audio: bool = True):
     # Rest the state and icons of the buttons without triggering Onchange methods
     main_window.buttonMediaPlay.blockSignals(True)
     main_window.buttonMediaPlay.setChecked(False)
@@ -378,10 +427,14 @@ def reset_media_buttons(main_window: 'MainWindow'):
     main_window.buttonMediaRecord.blockSignals(False)
     set_play_button_icon(main_window)
     set_record_button_icon(main_window)
+    if reset_audio:
+        reset_audio_button(main_window)
+    else:
+        set_audio_button_icon(main_window)
 
 
 def set_play_button_icon(main_window: 'MainWindow'):
-    if main_window.buttonMediaPlay.isChecked(): 
+    if main_window.buttonMediaPlay.isChecked():
         main_window.buttonMediaPlay.setIcon(QtGui.QIcon(":/media/media/play_on.png"))
         main_window.buttonMediaPlay.setToolTip("Stop")
     else:
@@ -408,6 +461,7 @@ def on_change_video_seek_slider(main_window: 'MainWindow', new_position=0):
 
     video_processor.current_frame_number = new_position
     video_processor.next_frame_to_display = new_position
+    video_processor.sync_audio_to_frame(new_position)
     if video_processor.media_capture:
         video_processor.media_capture.set(cv2.CAP_PROP_POS_FRAMES, new_position)
         ret, frame = misc_helpers.read_frame(video_processor.media_capture)
@@ -452,6 +506,7 @@ def on_slider_released(main_window: 'MainWindow'):
     # Perform the update to the new frame
     video_processor = main_window.video_processor
     if video_processor.media_capture:
+        video_processor.sync_audio_to_frame(new_position)
         video_processor.process_current_frame()  # Process the current frame
 
 def process_swap_faces(main_window: 'MainWindow'):
