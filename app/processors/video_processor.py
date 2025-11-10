@@ -13,8 +13,9 @@ import numpy
 import torch
 import pyvirtualcam
 
-from PySide6.QtCore import QObject, QTimer, Signal, Slot
+from PySide6.QtCore import QObject, QTimer, Signal, Slot, QUrl
 from PySide6.QtGui import QPixmap
+from PySide6.QtMultimedia import QAudioOutput, QMediaPlayer
 from app.processors.workers.frame_worker import FrameWorker
 from app.ui.widgets.actions import graphics_view_actions
 from app.ui.widgets.actions import common_actions as common_widget_actions
@@ -78,6 +79,14 @@ class VideoProcessor(QObject):
         self.gpu_memory_update_timer.timeout.connect(partial(common_widget_actions.update_gpu_memory_progressbar, main_window))
 
         self.single_frame_processed_signal.connect(self.display_current_frame)
+
+        self.audio_output = QAudioOutput()
+        self.audio_output.setVolume(1.0)
+        self.media_player = QMediaPlayer(self)
+        self.media_player.setAudioOutput(self.audio_output)
+        self.audio_available = False
+        self.audio_enabled = False
+        self.playback_fps = 0.0
 
     Slot(int, QPixmap, numpy.ndarray)
     def store_frame_to_display(self, frame_number, pixmap, frame):
@@ -189,9 +198,12 @@ class VideoProcessor(QObject):
                     fps = self.main_window.control['VideoPlaybackCustomFpsSlider']
                 else:
                     fps = self.media_capture.get(cv2.CAP_PROP_FPS)
-                
+
                 interval = 1000 / fps if fps > 0 else 30
                 interval = int(interval * 0.8) #Process 20% faster to offset the frame loading & processing time so the video will be played close to the original fps
+                self.playback_fps = fps
+                self._apply_audio_playback_rate()
+                self.sync_audio_to_frame(self.current_frame_number)
                 print(f"Starting frame_read_timer with an interval of {interval} ms.")
                 if self.recording:
                     self.frame_read_timer.start()
@@ -200,6 +212,7 @@ class VideoProcessor(QObject):
                     self.frame_read_timer.start(interval)
                     self.frame_display_timer.start()
                 self.gpu_memory_update_timer.start(5000) #Update GPU memory progressbar every 5 Seconds
+                self.start_audio_playback()
 
             else:
                 print("Error: Unable to open the video.")
@@ -317,9 +330,10 @@ class VideoProcessor(QObject):
     # @misc_helpers.benchmark
     def stop_processing(self):
         """Stop video processing and signal completion."""
+        self.stop_audio_playback()
         if not self.processing:
             # print("Processing not active. No action to perform.")
-            video_control_actions.reset_media_buttons(self.main_window)
+            video_control_actions.reset_media_buttons(self.main_window, reset_audio=False)
 
             return False
         
@@ -384,7 +398,7 @@ class VideoProcessor(QObject):
             print("Clearing Cache")
             torch.cuda.empty_cache()
             gc.collect()
-            video_control_actions.reset_media_buttons(self.main_window)
+            video_control_actions.reset_media_buttons(self.main_window, reset_audio=False)
             print("Successfully Stopped Processing")
             return True
         
@@ -395,9 +409,102 @@ class VideoProcessor(QObject):
                 thread.join()
         # print('Clearing Threads')
         self.threads.clear()
-    
+
+    def _probe_audio_stream(self, media_path: str) -> bool:
+        if not Path(media_path).exists():
+            return False
+        try:
+            result = subprocess.run(
+                [
+                    "ffprobe",
+                    "-v",
+                    "error",
+                    "-select_streams",
+                    "a",
+                    "-show_entries",
+                    "stream=index",
+                    "-of",
+                    "csv=p=0",
+                    media_path,
+                ],
+                capture_output=True,
+                text=True,
+                check=False,
+            )
+        except FileNotFoundError:
+            # If ffprobe is not available, assume audio may exist to avoid disabling the UI unnecessarily.
+            return True
+        except Exception as exc:  # pylint: disable=broad-except
+            print(f"Audio probe failed: {exc}")
+            return False
+
+        if result.returncode != 0:
+            if result.stderr:
+                print(result.stderr)
+            return False
+
+        return bool(result.stdout.strip())
+
+    def prepare_audio(self, media_path: str | None, file_type: str | None) -> bool:
+        self.stop_audio_playback()
+        self.media_player.setSource(QUrl())
+        self.audio_available = False
+        self.audio_enabled = False
+        if not media_path or file_type != 'video':
+            return False
+
+        if not self._probe_audio_stream(media_path):
+            return False
+
+        self.media_player.setSource(QUrl.fromLocalFile(media_path))
+        self.media_player.setPosition(0)
+        self.audio_available = True
+        self._apply_audio_playback_rate()
+        return True
+
+    def enable_audio(self, enabled: bool) -> bool:
+        final_state = bool(enabled and self.audio_available)
+        self.audio_enabled = final_state
+        if not final_state:
+            self.stop_audio_playback()
+            return False
+
+        self.sync_audio_to_frame(self.current_frame_number)
+        if self.processing:
+            self.start_audio_playback()
+        return True
+
+    def _apply_audio_playback_rate(self):
+        if not self.audio_available or self.fps <= 0:
+            self.media_player.setPlaybackRate(1.0)
+            return
+
+        playback_fps = self.playback_fps or self.fps
+        if playback_fps <= 0:
+            playback_fps = self.fps
+        rate = playback_fps / self.fps
+        if rate <= 0:
+            rate = 1.0
+        self.media_player.setPlaybackRate(rate)
+
+    def sync_audio_to_frame(self, frame_number: int):
+        if not self.audio_available or self.fps <= 0:
+            return
+        position_ms = int(max(frame_number, 0) / self.fps * 1000)
+        if abs(self.media_player.position() - position_ms) > 5:
+            self.media_player.setPosition(position_ms)
+
+    def start_audio_playback(self):
+        if self.audio_available and self.audio_enabled:
+            self._apply_audio_playback_rate()
+            self.media_player.play()
+
+    def stop_audio_playback(self):
+        if self.audio_available:
+            self.media_player.pause()
+
     def create_ffmpeg_subprocess(self):
-        # Use Dimensions of the last processed frame as it could be different from the original frame due to restorers and frame enhancers 
+        # Use Dimensions of the last processed frame as it could be different from the original frame due to restorers and frame enhancers
         frame_height, frame_width, _ = self.current_frame.shape
 
         self.temp_file = r'temp_output.mp4'
