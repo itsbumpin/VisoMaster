@@ -152,6 +152,7 @@ class MainWindow(QtWidgets.QMainWindow, Ui_MainWindow):
         # Connect the Play/Stop button to the play_video method
         self.buttonMediaPlay.toggled.connect(partial(video_control_actions.play_video, self))
         self.buttonMediaRecord.toggled.connect(partial(video_control_actions.record_video, self))
+        self.buttonMediaAudio.toggled.connect(partial(video_control_actions.toggle_audio, self))
         # self.buttonMediaStop.clicked.connect(partial(self.video_processor.stop_processing))
         self.findTargetFacesButton.clicked.connect(partial(card_actions.find_target_faces, self))
         self.clearTargetFacesButton.clicked.connect(partial(card_actions.clear_target_faces, self))

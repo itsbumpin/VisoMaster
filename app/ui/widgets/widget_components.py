@@ -226,6 +226,8 @@ class TargetMediaCardButton(CardButton):
         self.reset_related_widgets_and_values()
 
         main_window.video_processor.file_type = self.file_type
+        audio_available = main_window.video_processor.prepare_audio(self.media_path, self.file_type)
+        video_control_actions.update_audio_button_for_media(main_window, audio_available)
         main_window.videoSeekSlider.blockSignals(True)  # Block signals to prevent unnecessary updates
         main_window.videoSeekSlider.setMaximum(max_frames_number)
         main_window.videoSeekSlider.setValue(0)  # Set the slider to 0 for the new video
@@ -297,6 +299,8 @@ class TargetMediaCardButton(CardButton):
             main_window.graphicsViewFrame.update()
 
             main_window.video_processor.file_type = None
+            main_window.video_processor.prepare_audio(None, None)
+            video_control_actions.update_audio_button_for_media(main_window, False)
 
             if self.media_capture:
                 self.media_capture.release()
