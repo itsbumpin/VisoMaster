@@ -273,11 +273,7 @@
             </property>
             <property name="icon">
              <iconset resource="media.qrc">
-              <normaloff>:/media/media/audio_off.png</normaloff>
-              <normalon>:/media/media/audio_on.png</normalon>
-              <disabledoff>:/media/media/audio_off.png</disabledoff>
-              <disabledon>:/media/media/audio_on.png</disabledon>
-             </iconset>
+              <normaloff>:/media/media/audio_off.png</normaloff>:/media/media/audio_off.png</iconset>
             </property>
             <property name="checkable">
              <bool>true</bool>

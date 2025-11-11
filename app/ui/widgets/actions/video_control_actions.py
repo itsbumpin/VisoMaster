@@ -371,22 +371,12 @@ def set_play_button_icon_to_stop(main_window: 'MainWindow'):
     main_window.buttonMediaPlay.setIcon(QtGui.QIcon(":/media/media/play_on.png"))
     main_window.buttonMediaPlay.setToolTip("Stop")
 
-def _build_audio_icon() -> QtGui.QIcon:
-    icon = QtGui.QIcon()
-    off_path = ":/media/media/audio_off.png"
-    on_path = ":/media/media/audio_on.png"
-    icon.addFile(off_path, mode=QtGui.QIcon.Mode.Normal, state=QtGui.QIcon.State.Off)
-    icon.addFile(on_path, mode=QtGui.QIcon.Mode.Normal, state=QtGui.QIcon.State.On)
-    icon.addFile(off_path, mode=QtGui.QIcon.Mode.Disabled, state=QtGui.QIcon.State.Off)
-    icon.addFile(on_path, mode=QtGui.QIcon.Mode.Disabled, state=QtGui.QIcon.State.On)
-    icon.addFile(off_path, mode=QtGui.QIcon.Mode.Active, state=QtGui.QIcon.State.Off)
-    icon.addFile(on_path, mode=QtGui.QIcon.Mode.Active, state=QtGui.QIcon.State.On)
-    return icon
-
-
 def set_audio_button_icon(main_window: 'MainWindow'):
     button = main_window.buttonMediaAudio
-    button.setIcon(_build_audio_icon())
+    if button.isChecked():
+        button.setIcon(QtGui.QIcon(":/media/media/audio_on.png"))
+    else:
+        button.setIcon(QtGui.QIcon(":/media/media/audio_off.png"))
 
     if not button.isEnabled():
         button.setToolTip("Audio track not available")
