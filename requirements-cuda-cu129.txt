@@ -1,0 +1,12 @@
+--extra-index-url https://download.pytorch.org/whl/cu129
+--extra-index-url https://pypi.nvidia.com
+
+onnxruntime-gpu==1.20.0
+torch==2.6.0+cu129
+torchvision==0.21.0+cu129
+torchaudio==2.6.0+cu129
+
+tensorrt==10.8.0
+tensorrt-cu12_libs==10.8.0
+tensorrt-cu12_bindings==10.8.0
+nvidia-cudnn-cu12>=9.3,<10

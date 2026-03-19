@@ -35,6 +35,40 @@
 - Choose the correct CUDA version inside the installer based on your GPU Compatibility.
 - After successful installation, go to your installed directory and run the **Start_Portable.bat** file to launch **VisoMaster**
 
+## Linux / Runpod / Kasm (Recommended)
+
+For Linux GPU nodes, use the new one-command bootstrap flow. It is designed to fail fast if your node is unsupported, before spending a long time installing packages.
+
+### 1) Clone
+```sh
+git clone https://github.com/visomaster/VisoMaster.git
+cd VisoMaster
+```
+
+### 2) Setup
+```sh
+bash scripts/setup_linux.sh
+```
+
+What setup does:
+- Detects OS, Python, GPU, NVIDIA driver, CUDA version.
+- Performs fast preflight checks (indexes, TensorRT libs, Qt runtime deps).
+- Creates/reuses a `visomaster` conda env with Python 3.11.
+- Installs split requirements in safe order:
+  - `requirements-base.txt` (UI/runtime/common deps)
+  - `requirements-cuda-cu129.txt` (CUDA/Torch/TensorRT)
+- Applies a cuDNN compatibility patch automatically if needed.
+- Downloads models.
+- Runs import smoke tests.
+- Prints a final TensorRT vs CUDA fallback summary.
+
+### 3) Run
+```sh
+bash scripts/run_linux.sh
+```
+
+The run script activates the env, sets required Qt/LD library variables, and prints whether TensorRT is active or CUDA fallback is being used.
+
 ## **Manual Installation Guide (Nvidia)**
 
 Follow the steps below to install and run **VisoMaster** on your system.
